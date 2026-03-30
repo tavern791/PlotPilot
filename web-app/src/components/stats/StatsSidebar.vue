@@ -49,7 +49,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { storeToRefs } from 'pinia'
 import { NIcon } from 'naive-ui'
 import { RefreshOutline } from '@vicons/ionicons5'
@@ -60,15 +60,36 @@ const statsStore = useStatsStore()
 const { globalStats, loading } = storeToRefs(statsStore)
 
 const lastUpdateTime = ref<Date | null>(null)
+let updateInterval: number | null = null
 
 onMounted(async () => {
-  await statsStore.loadGlobalStats()
-  lastUpdateTime.value = new Date()
+  try {
+    await statsStore.loadGlobalStats()
+    lastUpdateTime.value = new Date()
+  } catch (error) {
+    console.error('Failed to load stats:', error)
+  }
+
+  // Update time display every minute
+  updateInterval = window.setInterval(() => {
+    lastUpdateTime.value = new Date()
+  }, 60000)
+})
+
+onUnmounted(() => {
+  if (updateInterval) {
+    clearInterval(updateInterval)
+  }
 })
 
 async function handleRefresh() {
-  await statsStore.loadGlobalStats(true)
-  lastUpdateTime.value = new Date()
+  try {
+    await statsStore.loadGlobalStats(true)
+    lastUpdateTime.value = new Date()
+  } catch (error) {
+    console.error('Failed to refresh stats:', error)
+    window.$message?.error('刷新失败，请稍后重试')
+  }
 }
 
 function formatNumber(num: number): string {
@@ -158,6 +179,11 @@ const updateTimeText = computed(() => formatTime(lastUpdateTime.value))
 .refresh-button:disabled {
   cursor: not-allowed;
   opacity: 0.5;
+}
+
+.refresh-button:focus-visible {
+  outline: 2px solid #3b82f6;
+  outline-offset: 2px;
 }
 
 .refresh-button .n-icon {
