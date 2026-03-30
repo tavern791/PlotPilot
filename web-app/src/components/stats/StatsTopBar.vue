@@ -1,5 +1,11 @@
 <template>
-  <div class="stats-top-bar">
+  <div v-if="loading" class="stats-top-bar loading">
+    <n-spin size="medium" />
+  </div>
+  <div v-else-if="error" class="stats-top-bar error">
+    <span>{{ error }}</span>
+  </div>
+  <div v-else class="stats-top-bar">
     <div
       v-for="stat in stats"
       :key="stat.key"
@@ -21,8 +27,8 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted } from 'vue'
-import { NTooltip } from 'naive-ui'
+import { computed, onMounted, ref } from 'vue'
+import { NTooltip, NSpin } from 'naive-ui'
 import { useStatsStore } from '@/stores/statsStore'
 
 const props = defineProps<{
@@ -31,18 +37,34 @@ const props = defineProps<{
 
 const statsStore = useStatsStore()
 
-const bookStats = computed(() => statsStore.getBookStats.value(props.slug))
+// Constants
+const DECIMAL_PRECISION = 1
+const MS_PER_DAY = 1000 * 60 * 60 * 24
+const DAYS_THRESHOLD = 7
+
+// State
+const loading = ref(false)
+const error = ref<string | null>(null)
+
+// Fix: Remove .value before function call
+const bookStats = computed(() => statsStore.getBookStats(props.slug))
 
 const stats = computed(() => {
   if (!bookStats.value) return []
 
   const s = bookStats.value
+
+  // Pre-compute formatted values to avoid duplicate toLocaleString() calls
+  const formattedWords = s.total_words.toLocaleString()
+  const formattedCompletionRate = s.completion_rate.toFixed(DECIMAL_PRECISION)
+  const formattedAvgWords = s.avg_chapter_words.toLocaleString()
+
   return [
     {
       key: 'words',
       label: '总字数',
-      value: s.total_words.toLocaleString(),
-      tooltip: `当前书籍共 ${s.total_words.toLocaleString()} 字`
+      value: formattedWords,
+      tooltip: `当前书籍共 ${formattedWords} 字`
     },
     {
       key: 'chapters',
@@ -53,14 +75,14 @@ const stats = computed(() => {
     {
       key: 'completion',
       label: '完成率',
-      value: `${s.completion_rate.toFixed(1)}%`,
-      tooltip: `项目完成度：${s.completion_rate.toFixed(1)}%`
+      value: `${formattedCompletionRate}%`,
+      tooltip: `项目完成度：${formattedCompletionRate}%`
     },
     {
       key: 'avg',
       label: '平均字数',
-      value: s.avg_chapter_words.toLocaleString(),
-      tooltip: `每章平均 ${s.avg_chapter_words.toLocaleString()} 字`
+      value: formattedAvgWords,
+      tooltip: `每章平均 ${formattedAvgWords} 字`
     },
     {
       key: 'updated',
@@ -76,13 +98,13 @@ function formatDate(dateStr: string): string {
     const date = new Date(dateStr)
     const now = new Date()
     const diffMs = now.getTime() - date.getTime()
-    const diffDays = Math.floor(diffMs / (1000 * 60 * 60 * 24))
+    const diffDays = Math.floor(diffMs / MS_PER_DAY)
 
     if (diffDays === 0) {
       return '今天'
     } else if (diffDays === 1) {
       return '昨天'
-    } else if (diffDays < 7) {
+    } else if (diffDays < DAYS_THRESHOLD) {
       return `${diffDays}天前`
     } else {
       return date.toLocaleDateString('zh-CN', { month: 'short', day: 'numeric' })
@@ -93,7 +115,16 @@ function formatDate(dateStr: string): string {
 }
 
 onMounted(async () => {
-  await statsStore.loadBookStats(props.slug)
+  loading.value = true
+  error.value = null
+  try {
+    await statsStore.loadBookStats(props.slug)
+  } catch (err) {
+    console.error('Failed to load book stats:', err)
+    error.value = '加载统计数据失败'
+  } finally {
+    loading.value = false
+  }
 })
 </script>
 
@@ -106,6 +137,16 @@ onMounted(async () => {
   justify-content: space-around;
   padding: 0 24px;
   color: white;
+}
+
+.stats-top-bar.loading,
+.stats-top-bar.error {
+  justify-content: center;
+}
+
+.stats-top-bar.error span {
+  font-size: 14px;
+  opacity: 0.9;
 }
 
 .stat-item {
