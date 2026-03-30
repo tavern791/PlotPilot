@@ -1,7 +1,9 @@
 <template>
   <div class="home">
-    <div class="home-bg" aria-hidden="true" />
-    <div class="container">
+    <StatsSidebar />
+    <div class="home-content">
+      <div class="home-bg" aria-hidden="true" />
+      <div class="container">
       <header class="header">
         <h1 class="title">书稿工作台</h1>
         <p class="subtitle">从一句梗概到完整书稿，结构规划与校阅一站完成</p>
@@ -142,6 +144,7 @@
         </n-grid>
       </section>
     </div>
+    </div>
   </div>
 </template>
 
@@ -150,6 +153,7 @@ import { h, ref, onMounted, computed } from 'vue'
 import { useRouter } from 'vue-router'
 import { useMessage } from 'naive-ui'
 import { bookApi } from '../api/book'
+import StatsSidebar from '@/components/stats/StatsSidebar.vue'
 
 const IconSpark = () =>
   h(
@@ -298,9 +302,15 @@ onMounted(() => {
 
 <style scoped>
 .home {
+  display: flex;
   min-height: 100vh;
+}
+
+.home-content {
+  flex: 1;
+  margin-left: 280px;
+  padding: 24px;
   position: relative;
-  padding: 48px 20px 64px;
   overflow: hidden;
 }
 
