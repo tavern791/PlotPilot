@@ -79,6 +79,32 @@ async def get_bible_by_novel(
     return bible
 
 
+@router.get("/novels/{novel_id}/bible/characters", response_model=list)
+async def list_characters(
+    novel_id: str,
+    service: BibleService = Depends(get_bible_service)
+):
+    """列出 Bible 中的所有人物
+
+    Args:
+        novel_id: 小说 ID
+        service: Bible 服务
+
+    Returns:
+        人物 DTO 列表
+
+    Raises:
+        HTTPException: 如果 Bible 不存在
+    """
+    bible = service.get_bible_by_novel(novel_id)
+    if bible is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Bible not found for novel: {novel_id}"
+        )
+    return bible.characters
+
+
 @router.post("/novels/{novel_id}/bible/characters", response_model=BibleDTO)
 async def add_character(
     novel_id: str,
