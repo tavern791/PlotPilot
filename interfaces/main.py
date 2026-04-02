@@ -45,7 +45,7 @@ app.add_middleware(
 
 # 注册新架构路由
 app.include_router(novels.router, prefix="/api/v1")
-app.include_router(chapters.router, prefix="/api/v1")
+app.include_router(chapters.router, prefix="/api/v1/novels")
 app.include_router(bible.router, prefix="/api/v1")
 app.include_router(cast.router, prefix="/api/v1")
 app.include_router(ai.router, prefix="/api/v1")

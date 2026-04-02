@@ -1,34 +1,51 @@
 #!/usr/bin/env python3
-"""Test hosted-write-stream API endpoint"""
-import asyncio
-import httpx
+"""测试托管连写端点（auto_save=true）"""
+import requests
+import json
 
-async def test_hosted_write():
-    url = "http://localhost:8007/api/v1/novels/novel-1775066530753/hosted-write-stream"
-    payload = {
-        "from_chapter": 6,
-        "to_chapter": 10,
-        "auto_save": True,
-        "auto_outline": True
-    }
+novel_id = "test-quality-1"
+url = f"http://localhost:8007/api/v1/novels/{novel_id}/hosted-write-stream"
 
-    print(f"Testing: POST {url}")
-    print(f"Payload: {payload}\n")
+payload = {
+    "from_chapter": 1,
+    "to_chapter": 1,
+    "auto_save": True,
+    "auto_outline": True
+}
 
-    async with httpx.AsyncClient(timeout=300.0) as client:
-        async with client.stream("POST", url, json=payload) as response:
-            print(f"Status: {response.status_code}")
-            print(f"Headers: {dict(response.headers)}\n")
+print(f"POST {url}")
+print(f"Payload: {json.dumps(payload, ensure_ascii=False)}")
+print("\n--- Streaming response ---\n")
 
-            if response.status_code != 200:
-                text = await response.aread()
-                print(f"Error: {text.decode()}")
-                return
+response = requests.post(url, json=payload, stream=True)
+print(f"Status: {response.status_code}")
 
-            print("Streaming events:\n")
-            async for line in response.aiter_lines():
-                if line.startswith("data: "):
-                    print(line)
+if response.status_code == 200:
+    for line in response.iter_lines():
+        if line:
+            line_str = line.decode('utf-8')
+            if line_str.startswith('data: '):
+                data = json.loads(line_str[6:])
+                event_type = data.get('type')
 
-if __name__ == "__main__":
-    asyncio.run(test_hosted_write())
+                if event_type == 'session':
+                    print(f"[SESSION] {data}")
+                elif event_type == 'chapter_start':
+                    print(f"[CHAPTER_START] Chapter {data.get('chapter')}")
+                elif event_type == 'outline':
+                    print(f"[OUTLINE] {data.get('text', '')[:100]}...")
+                elif event_type == 'phase':
+                    print(f"[PHASE] {data.get('phase')}")
+                elif event_type == 'chunk':
+                    pass  # 跳过内容片段
+                elif event_type == 'done':
+                    content_len = len(data.get('content', ''))
+                    print(f"[DONE] Content length: {content_len}")
+                elif event_type == 'saved':
+                    print(f"[SAVED] Chapter {data.get('chapter')}, ok={data.get('ok')}, created={data.get('created', False)}")
+                    if not data.get('ok'):
+                        print(f"  Error: {data.get('message')}")
+                elif event_type == 'error':
+                    print(f"[ERROR] {data.get('message')}")
+else:
+    print(f"Error: {response.text}")

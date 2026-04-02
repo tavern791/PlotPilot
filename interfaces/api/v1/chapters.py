@@ -4,14 +4,16 @@ from typing import List, Literal
 from pydantic import BaseModel, Field
 
 from application.services.chapter_service import ChapterService
+from application.services.novel_service import NovelService
 from application.dtos.chapter_dto import ChapterDTO
+from application.dtos.novel_dto import NovelDTO
 from application.dtos.chapter_review_dto import ChapterReviewDTO
 from application.dtos.chapter_structure_dto import ChapterStructureDTO
-from interfaces.api.dependencies import get_chapter_service
+from interfaces.api.dependencies import get_chapter_service, get_novel_service
 from domain.shared.exceptions import EntityNotFoundError
 
 
-router = APIRouter(prefix="/novels", tags=["chapters"])
+router = APIRouter(tags=["chapters"])
 
 
 # Request Models
@@ -43,6 +45,14 @@ class ChapterStructureResponse(BaseModel):
     pacing: str
 
 
+class CreateChapterRequest(BaseModel):
+    """创建章节请求"""
+    chapter_id: str = Field(..., description="章节 ID")
+    number: int = Field(..., gt=0, description="章节编号")
+    title: str = Field(..., min_length=1, max_length=200, description="章节标题")
+    content: str = Field(..., min_length=1, description="章节内容")
+
+
 # Routes
 @router.get("/{novel_id}/chapters", response_model=List[ChapterDTO])
 async def list_chapters(
@@ -59,6 +69,34 @@ async def list_chapters(
         章节 DTO 列表
     """
     return service.list_chapters_by_novel(novel_id)
+
+
+@router.post("/{novel_id}/chapters", response_model=NovelDTO, status_code=201)
+async def create_chapter(
+    novel_id: str,
+    request: CreateChapterRequest,
+    novel_service: NovelService = Depends(get_novel_service)
+):
+    """创建章节
+
+    Args:
+        novel_id: 小说 ID
+        request: 创建章节请求
+        novel_service: Novel 服务
+
+    Returns:
+        更新后的小说 DTO
+    """
+    try:
+        return novel_service.add_chapter(
+            novel_id=novel_id,
+            chapter_id=request.chapter_id,
+            number=request.number,
+            title=request.title,
+            content=request.content
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
 
 
 @router.get("/{novel_id}/chapters/{chapter_number}", response_model=ChapterDTO)

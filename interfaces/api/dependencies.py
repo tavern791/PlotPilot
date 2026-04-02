@@ -176,7 +176,7 @@ def get_chapter_service() -> ChapterService:
 
 def get_hosted_write_service() -> HostedWriteService:
     """托管连写：自动大纲 + 多章流式生成 + 可选落库。"""
-    return HostedWriteService(get_auto_workflow(), get_chapter_service())
+    return HostedWriteService(get_auto_workflow(), get_chapter_service(), get_novel_service())
 
 
 def get_bible_service() -> BibleService:

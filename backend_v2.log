@@ -1,0 +1,17 @@
+INFO:     Started server process [169200]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://0.0.0.0:8007 (Press CTRL+C to quit)
+INFO:     127.0.0.1:50066 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50087 - "POST /api/v1/generation/hosted-write-stream?novel_id=test-quality-1&from_chapter=1&to_chapter=1&auto_save=true HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:50089 - "GET /openapi.json HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50092 - "GET /openapi.json HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53562 - "POST /api/v1/novels/test-quality-1/hosted-write-stream?from_chapter=1&to_chapter=1&auto_save=true HTTP/1.1" 422 Unprocessable Entity
+INFO:     127.0.0.1:59670 - "POST /api/v1/novels/test-quality-1/hosted-write-stream HTTP/1.1" 200 OK
+[HOSTED_WRITE_V2] Starting stream_hosted_write for novel test-quality-1, chapters 1-1, auto_save=True
+INFO:     127.0.0.1:58566 - "POST /api/v1/novels/test-quality-1/hosted-write-stream HTTP/1.1" 200 OK
+[HOSTED_WRITE_V2] Starting stream_hosted_write for novel test-quality-1, chapters 1-1, auto_save=True
+Consistency check failed: __init__() missing 1 required positional argument: 'novel_id'
+[DEBUG] Attempting to save chapter 1
+[DEBUG] EntityNotFoundError caught: Chapter with id 'test-quality-1/chapter-1' not found
+[DEBUG] Chapter 1 created successfully
