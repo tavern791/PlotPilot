@@ -2,18 +2,10 @@
   <div class="kb-root">
     <div class="kb-toolbar">
       <n-text depth="3" class="kb-hint">
-        知识库：管理全书知识三元组，支持图谱可视化、JSON 编辑和表格编辑
+        知识库：全书三元组。图谱总览、JSON 批量编辑；结构化表格请点「三元组表格」（与人物网 / 地点关系图全页的编辑能力相同）。
       </n-text>
       <n-space :size="8">
-        <n-button
-          v-if="viewMode === 'editor'"
-          type="primary"
-          size="small"
-          :loading="saving"
-          @click="save"
-        >
-          保存
-        </n-button>
+        <n-button size="small" secondary @click="tableDrawerOpen = true">三元组表格</n-button>
         <n-button size="small" quaternary :loading="loading" @click="reload">刷新</n-button>
       </n-space>
     </div>
@@ -21,103 +13,40 @@
     <n-tabs v-model:value="viewMode" type="line" size="medium" animated class="kb-tabs">
       <n-tab-pane name="graph" tab="图谱">
         <div v-if="emptyHint" class="kb-empty">
-          <n-empty description="尚无三元组，可在「可视化编辑」中添加或由 kg_upsert_fact 写入" size="small" />
+          <n-empty description="尚无三元组，可打开「三元组表格」添加，或编辑 JSON / 使用 kg_upsert_fact" size="small" />
         </div>
         <GraphChart v-else :nodes="graphData.nodes" :links="graphData.links" height="calc(100vh - 200px)" />
       </n-tab-pane>
 
       <n-tab-pane name="json" tab="JSON">
+        <n-space :size="8" style="margin-bottom: 10px">
+          <n-button size="small" type="primary" :loading="saving" @click="saveJson">保存 JSON</n-button>
+          <n-button size="small" @click="formatJson">格式化</n-button>
+        </n-space>
         <n-input
           v-model:value="jsonText"
           type="textarea"
           :autosize="{ minRows: 20, maxRows: 40 }"
-          placeholder="JSON 格式的三元组数据"
+          placeholder="JSON 数组：与 GET /knowledge 返回的 facts 格式一致"
           class="kb-json-editor"
           :status="jsonError ? 'error' : undefined"
         />
         <n-text v-if="jsonError" type="error" depth="3" style="font-size: 12px; margin-top: 8px; display: block;">
           {{ jsonError }}
         </n-text>
-        <n-space :size="8" style="margin-top: 12px;">
-          <n-button size="small" @click="formatJson">格式化</n-button>
-          <n-button size="small" type="primary" :loading="saving" @click="saveJson">保存 JSON</n-button>
-        </n-space>
-      </n-tab-pane>
-
-      <n-tab-pane name="editor" tab="可视化编辑">
-        <section class="kb-section">
-          <div class="kb-section-head">
-            <span class="kb-section-icon">◎</span>
-            <span class="kb-section-title">知识三元组</span>
-            <n-tag size="tiny" round :bordered="false" class="kb-tag-tool">kg_upsert_fact</n-tag>
-          </div>
-          <p class="kb-section-hint">
-            事实型约束；主语/宾语可与人物图谱姓名对应，并标注出处章号。
-            <strong>人物关系规范：</strong>人物节点用「主—是—主角/配角」，关系用「张三—师徒/父子/朋友—李四」。
-            <strong>地点：</strong>实体类型选「地点」；由圣经同步的「位于 / 地图地点」也会出现在列表中（可筛选「地点」查看）。
-          </p>
-
-          <div class="kb-editor-filter">
-            <n-text depth="3" style="font-size: 12px">列表筛选（保存仍提交全部 {{ factStats.total }} 条）：</n-text>
-            <n-radio-group v-model:value="editorFilter" size="small">
-              <n-radio-button value="all">全部</n-radio-button>
-              <n-radio-button value="character">人物 ({{ factStats.character }})</n-radio-button>
-              <n-radio-button value="location">地点 ({{ factStats.location }})</n-radio-button>
-            </n-radio-group>
-          </div>
-
-          <div class="kb-facts">
-            <div v-for="{ f, i: fi } in filteredEditorRows" :key="f.id" class="kb-fact">
-              <div class="kb-fact-id">{{ f.id }}</div>
-              <div class="kb-fact-grid">
-                <n-input v-model:value="f.subject" placeholder="主语" size="small" />
-                <n-input v-model:value="f.predicate" placeholder="关系" size="small" />
-                <n-input v-model:value="f.object" placeholder="宾语" size="small" />
-                <n-input-number
-                  v-model:value="f.chapter_id"
-                  placeholder="章号"
-                  size="small"
-                  :min="1"
-                  :show-button="false"
-                  class="kb-fact-ch"
-                />
-                <n-input v-model:value="f.note" placeholder="备注" size="small" class="kb-fact-note" />
-              </div>
-              <div class="kb-fact-meta">
-                <n-select
-                  v-model:value="f.entity_type"
-                  :options="entityTypeOptions"
-                  placeholder="实体类型"
-                  size="small"
-                  clearable
-                  class="kb-fact-select"
-                />
-                <n-select
-                  v-model:value="f.importance"
-                  :options="getImportanceOptions(f.entity_type)"
-                  placeholder="重要程度"
-                  size="small"
-                  clearable
-                  class="kb-fact-select"
-                  :disabled="!f.entity_type"
-                />
-                <n-select
-                  v-if="f.entity_type === 'location'"
-                  v-model:value="f.location_type"
-                  :options="locationTypeOptions"
-                  placeholder="地点类型"
-                  size="small"
-                  clearable
-                  class="kb-fact-select"
-                />
-              </div>
-              <n-button size="tiny" quaternary type="error" @click="removeFact(fi)">删除</n-button>
-            </div>
-          </div>
-          <n-button dashed block class="kb-add-fact" @click="addFact">+ 添加三元组</n-button>
-        </section>
       </n-tab-pane>
     </n-tabs>
+
+    <n-drawer v-model:show="tableDrawerOpen" :width="drawerWidth" placement="right" display-directive="if">
+      <n-drawer-content title="三元组表格" closable>
+        <KnowledgeTriplesTableEditor
+          v-if="tableDrawerOpen"
+          :slug="slug"
+          default-entity-filter="all"
+          @saved="onTableSaved"
+        />
+      </n-drawer-content>
+    </n-drawer>
   </div>
 </template>
 
@@ -126,10 +55,13 @@ import { ref, computed, watch, onMounted, nextTick } from 'vue'
 import { useMessage } from 'naive-ui'
 import { knowledgeApi, type ChapterSummary } from '../api/knowledge'
 import GraphChart from './charts/GraphChart.vue'
+import KnowledgeTriplesTableEditor from './KnowledgeTriplesTableEditor.vue'
 import { convertGraph, type VisNode, type VisEdge, type EChartsGraphData } from '../utils/visToEcharts'
 
 const props = defineProps<{ slug: string }>()
 const message = useMessage()
+
+const drawerWidth = 920
 
 interface Fact {
   id: string
@@ -139,71 +71,19 @@ interface Fact {
   chapter_id?: number | null
   note?: string
   entity_type?: 'character' | 'location' | null
-  importance?: string | null
-  location_type?: string | null
 }
 
-const entityTypeOptions = [
-  { label: '人物', value: 'character' },
-  { label: '地点', value: 'location' },
-]
-
-const characterImportanceOptions = [
-  { label: '主角', value: 'primary' },
-  { label: '重要配角', value: 'secondary' },
-  { label: '次要人物', value: 'minor' },
-]
-
-const locationImportanceOptions = [
-  { label: '核心地点', value: 'core' },
-  { label: '重要地点', value: 'important' },
-  { label: '一般地点', value: 'normal' },
-]
-
-const locationTypeOptions = [
-  { label: '城市', value: 'city' },
-  { label: '区域', value: 'region' },
-  { label: '建筑', value: 'building' },
-  { label: '势力', value: 'faction' },
-  { label: '领域', value: 'realm' },
-]
-
-const getImportanceOptions = (entityType?: string | null) => {
-  if (entityType === 'character') return characterImportanceOptions
-  if (entityType === 'location') return locationImportanceOptions
-  return []
-}
-
-const viewMode = ref<'graph' | 'json' | 'editor'>('graph')
+const viewMode = ref<'graph' | 'json'>('graph')
+const tableDrawerOpen = ref(false)
 const loading = ref(false)
 const saving = ref(false)
 const facts = ref<Fact[]>([])
 const storyVersion = ref(1)
 const premiseLock = ref('')
 const chaptersSnapshot = ref<ChapterSummary[]>([])
-const editorFilter = ref<'all' | 'character' | 'location'>('all')
 const jsonText = ref('')
 const jsonError = ref('')
 const graphData = ref<EChartsGraphData>({ nodes: [], links: [] })
-
-const factStats = computed(() => {
-  let character = 0
-  let location = 0
-  for (const f of facts.value) {
-    if (f.entity_type === 'character') character += 1
-    else if (f.entity_type === 'location') location += 1
-  }
-  return { character, location, total: facts.value.length }
-})
-
-const filteredEditorRows = computed(() =>
-  facts.value
-    .map((f, i) => ({ f, i }))
-    .filter(({ f }) => {
-      if (editorFilter.value === 'all') return true
-      return f.entity_type === editorFilter.value
-    }),
-)
 
 const emptyHint = computed(() => facts.value.length === 0 && !loading.value)
 
@@ -288,23 +168,8 @@ const reload = async () => {
   }
 }
 
-const addFact = () => {
-  const newId = `fact_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`
-  facts.value.push({
-    id: newId,
-    subject: '',
-    predicate: '',
-    object: '',
-    chapter_id: null,
-    note: '',
-    entity_type: null,
-    importance: null,
-    location_type: null,
-  })
-}
-
-const removeFact = (index: number) => {
-  facts.value.splice(index, 1)
+const onTableSaved = async () => {
+  await reload()
 }
 
 const save = async () => {
@@ -403,104 +268,5 @@ onMounted(() => {
 .kb-json-editor {
   font-family: 'Consolas', 'Monaco', monospace;
   font-size: 13px;
-}
-
-.kb-section {
-  max-width: 1200px;
-}
-
-.kb-section-head {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin-bottom: 8px;
-}
-
-.kb-section-icon {
-  font-size: 16px;
-  color: #6366f1;
-}
-
-.kb-section-title {
-  font-size: 14px;
-  font-weight: 600;
-  color: #1f2937;
-}
-
-.kb-tag-tool {
-  font-size: 11px;
-  background: #f3f4f6;
-  color: #6b7280;
-}
-
-.kb-section-hint {
-  font-size: 12px;
-  color: #6b7280;
-  margin: 0 0 16px 0;
-  line-height: 1.6;
-}
-
-.kb-editor-filter {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 10px;
-  margin: 0 0 14px;
-  padding: 8px 10px;
-  border-radius: 8px;
-  background: rgba(99, 102, 241, 0.06);
-  border: 1px solid rgba(99, 102, 241, 0.12);
-}
-
-.kb-facts {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-  margin-bottom: 16px;
-}
-
-.kb-fact {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  padding: 12px;
-  background: #f9fafb;
-  border-radius: 8px;
-  border: 1px solid #e5e7eb;
-}
-
-.kb-fact-id {
-  font-size: 11px;
-  color: #9ca3af;
-  font-family: monospace;
-}
-
-.kb-fact-grid {
-  display: grid;
-  grid-template-columns: 1fr 1fr 1fr 100px 1.5fr;
-  gap: 8px;
-}
-
-.kb-fact-meta {
-  display: flex;
-  gap: 8px;
-  align-items: center;
-}
-
-.kb-fact-select {
-  flex: 1;
-  min-width: 120px;
-}
-
-.kb-fact-ch {
-  width: 100px;
-}
-
-.kb-fact-note {
-  grid-column: span 2;
-}
-
-.kb-add-fact {
-  margin-top: 8px;
 }
 </style>

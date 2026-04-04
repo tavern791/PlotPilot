@@ -237,6 +237,8 @@ onMounted(async () => {
   await nextTick()
   await reload()
 })
+
+defineExpose({ reload })
 </script>
 
 <style scoped>

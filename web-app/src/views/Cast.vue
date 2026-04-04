@@ -7,7 +7,7 @@
           工作台
         </n-button>
         <n-divider vertical />
-        <h1 class="cast-title">人物关系网（只读）</h1>
+        <h1 class="cast-title">人物关系网</h1>
         <n-text depth="3">{{ slug }}</n-text>
       </n-space>
       <n-space>
@@ -20,7 +20,8 @@
           @update:value="onSearch"
         />
         <n-button secondary @click="reload">刷新</n-button>
-        <n-button type="primary" @click="goKnowledge">编辑三元组</n-button>
+        <n-button type="primary" @click="openTriplesDrawer()">三元组表格</n-button>
+        <n-button quaternary @click="goKnowledge">工作台 · 知识库</n-button>
       </n-space>
     </header>
 
@@ -114,8 +115,8 @@
           </n-collapse-item>
         </n-collapse>
 
-        <n-alert type="info" title="关系图现在从三元组自动生成" style="margin-bottom: 16px;">
-          <p>要编辑人物和关系，请前往工作台的「叙事与知识」标签页，编辑三元组后保存。</p>
+        <n-alert type="info" title="关系图由知识库三元组生成，可在此页直接编辑" style="margin-bottom: 16px;">
+          <p>点击上方<strong>三元组表格</strong>打开抽屉编辑（默认筛选人物）；或在侧栏选中人物后点「编辑与此人相关」。</p>
           <p style="margin-top: 8px;"><strong>人物节点规范：</strong></p>
           <ul style="margin: 4px 0; padding-left: 20px;">
             <li>主语：人物名称</li>
@@ -130,14 +131,24 @@
             <li>宾语：人物B</li>
             <li>备注：关系说明</li>
           </ul>
-          <n-button type="primary" @click="goKnowledge" style="margin-top: 12px;">
-            前往编辑三元组
-          </n-button>
+          <n-space style="margin-top: 12px">
+            <n-button type="primary" @click="openTriplesDrawer()">打开三元组表格</n-button>
+            <n-button @click="goKnowledge">工作台知识库</n-button>
+          </n-space>
         </n-alert>
 
         <n-tabs v-model:value="castPane" type="segment" animated>
           <n-tab-pane name="node" tab="人物详情">
             <div v-if="formChar.id" class="side-form">
+              <n-button
+                block
+                type="primary"
+                size="small"
+                style="margin-bottom: 12px"
+                @click="openTriplesDrawer(formChar.name)"
+              >
+                编辑与此人相关的三元组
+              </n-button>
               <n-descriptions label-placement="left" :column="1" bordered size="small">
                 <n-descriptions-item label="ID">{{ formChar.id }}</n-descriptions-item>
                 <n-descriptions-item label="姓名">{{ formChar.name }}</n-descriptions-item>
@@ -165,14 +176,28 @@
         </n-tabs>
       </aside>
     </div>
+
+    <n-drawer v-model:show="triplesDrawerOpen" :width="920" placement="right" display-directive="if">
+      <n-drawer-content title="人物相关三元组" closable>
+        <KnowledgeTriplesTableEditor
+          v-if="triplesDrawerOpen"
+          :key="triplesDrawerKey"
+          :slug="slug"
+          default-entity-filter="character"
+          :focus-entity-name="triplesDrawerFocus"
+          @saved="onTriplesSaved"
+        />
+      </n-drawer-content>
+    </n-drawer>
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, computed, watch, onMounted, onUnmounted, nextTick } from 'vue'
+import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useMessage } from 'naive-ui'
 import GraphChart from '../components/charts/GraphChart.vue'
+import KnowledgeTriplesTableEditor from '../components/KnowledgeTriplesTableEditor.vue'
 import { convertGraph, type VisNode, type VisEdge, type EChartsNode, type EChartsLink } from '../utils/visToEcharts'
 import { castApi } from '../api/cast'
 
@@ -208,7 +233,10 @@ const graph = ref<{ characters: CastCharacter[]; relationships: CastRelationship
 
 const searchQ = ref('')
 const highlightIds = ref<Set<string>>(new Set())
-const saving = ref(false)
+
+const triplesDrawerOpen = ref(false)
+const triplesDrawerFocus = ref('')
+const triplesDrawerKey = ref(0)
 
 interface CastCoveragePayload {
   chapter_files_scanned: number
@@ -399,6 +427,16 @@ const goWorkbench = () => {
 
 const goKnowledge = () => {
   router.push(`/book/${slug}/workbench?tab=knowledge`)
+}
+
+const openTriplesDrawer = (focusName?: string) => {
+  triplesDrawerFocus.value = (focusName || '').trim()
+  triplesDrawerKey.value += 1
+  triplesDrawerOpen.value = true
+}
+
+const onTriplesSaved = async () => {
+  await reload()
 }
 
 onMounted(async () => {

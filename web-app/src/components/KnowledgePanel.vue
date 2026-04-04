@@ -4,7 +4,7 @@
       <div class="kp-hero-copy">
         <h3 class="kp-title">侧栏资料</h3>
         <p class="kp-lead">
-          可在「叙事与知识」「关系图」「知识库」间切换：叙事含梗概锁定、章摘要；<strong>关系图从知识库三元组自动生成</strong>（人物节点：谓词="是"且宾语含"主角/配角"；人物关系：谓词为"师徒/父子/朋友"等）；知识库支持图谱可视化、JSON 编辑和表格编辑。书目级梗概以
+          可在「检索」「叙事知识」「关系图」「知识库」间切换：检索全书知识；叙事含梗概锁定、章摘要；<strong>关系图从知识库三元组自动生成</strong>（人物网 / 地点图全页与工作台知识库均可打开「三元组表格」编辑）。书目级梗概以
           <strong>manifest</strong> 为准。
         </p>
       </div>
@@ -31,63 +31,64 @@
     </header>
 
     <n-radio-group v-model:value="sideTab" class="kp-seg" size="small">
-      <n-radio-button value="narrative">叙事与知识</n-radio-button>
+      <n-radio-button value="search">检索</n-radio-button>
+      <n-radio-button value="narrative">叙事知识</n-radio-button>
       <n-radio-button value="graph">关系图</n-radio-button>
       <n-radio-button value="knowledge">知识库</n-radio-button>
     </n-radio-group>
 
-    <div v-show="sideTab === 'narrative'" class="kp-banner">
-      <span class="kp-banner-dot" aria-hidden="true" />
-      <span class="kp-banner-text">
-        梗概锁定、分章叙事可由工具（<code>story_*</code>）写入，也可在此手改后保存。每章「节拍」对应大纲子段落；人物名请与关系图一致。<strong>人物关系请在「知识库」中编辑三元组。</strong>
-      </span>
+    <div v-show="sideTab === 'search'" class="kp-search-container">
+      <n-card class="kp-search" size="small" :bordered="false">
+        <n-space align="center" :size="10" wrap>
+          <n-input
+            v-model:value="searchQ"
+            size="small"
+            placeholder="全书知识检索：人物、关系、章摘要、事实…"
+            class="kp-search-input"
+            @keydown.enter.prevent="doSearch"
+          />
+          <n-button size="small" secondary :loading="searching" @click="doSearch">检索</n-button>
+          <n-button size="small" quaternary @click="useHitToComposer" :disabled="!selectedHit">
+            引用到输入框
+          </n-button>
+        </n-space>
+        <div v-if="searchHits.length" class="kp-search-list">
+          <div
+            v-for="(h, i) in searchHits"
+            :key="h.id || i"
+            class="kp-hit"
+            :class="{ active: selectedHit === h }"
+            @click="selectedHit = h"
+          >
+            <div class="kp-hit-meta">
+              <n-tag size="tiny" round :bordered="false">{{ h.meta?.type || '资料' }}</n-tag>
+              <span class="kp-hit-id">{{ h.meta?.id || h.id || '' }}</span>
+            </div>
+            <div class="kp-hit-text">{{ h.text }}</div>
+          </div>
+        </div>
+        <div v-else class="kp-search-empty">
+          <n-text depth="3" style="font-size: 12px">提示：先用工具把资料写入侧栏，检索命中会更稳定。</n-text>
+        </div>
+      </n-card>
     </div>
 
-    <n-tabs
-      v-show="sideTab === 'narrative'"
-      v-model:value="subTab"
-      type="line"
-      size="small"
-      animated
-      class="kp-subtabs"
-    >
-      <n-tab-pane name="search" tab="检索">
-        <n-card class="kp-search" size="small" :bordered="false">
-          <n-space align="center" :size="10" wrap>
-            <n-input
-              v-model:value="searchQ"
-              size="small"
-              placeholder="全书知识检索：人物、关系、章摘要、事实…"
-              class="kp-search-input"
-              @keydown.enter.prevent="doSearch"
-            />
-            <n-button size="small" secondary :loading="searching" @click="doSearch">检索</n-button>
-            <n-button size="small" quaternary @click="useHitToComposer" :disabled="!selectedHit">
-              引用到输入框
-            </n-button>
-          </n-space>
-          <div v-if="searchHits.length" class="kp-search-list">
-            <div
-              v-for="(h, i) in searchHits"
-              :key="h.id || i"
-              class="kp-hit"
-              :class="{ active: selectedHit === h }"
-              @click="selectedHit = h"
-            >
-              <div class="kp-hit-meta">
-                <n-tag size="tiny" round :bordered="false">{{ h.meta?.type || '资料' }}</n-tag>
-                <span class="kp-hit-id">{{ h.meta?.id || h.id || '' }}</span>
-              </div>
-              <div class="kp-hit-text">{{ h.text }}</div>
-            </div>
-          </div>
-          <div v-else class="kp-search-empty">
-            <n-text depth="3" style="font-size: 12px">提示：先用工具把资料写入侧栏，检索命中会更稳定。</n-text>
-          </div>
-        </n-card>
-      </n-tab-pane>
+    <div v-show="sideTab === 'narrative'" class="kp-narrative-container">
+      <div class="kp-banner">
+        <span class="kp-banner-dot" aria-hidden="true" />
+        <span class="kp-banner-text">
+          梗概锁定、分章叙事可由工具（<code>story_*</code>）写入，也可在此手改后保存。每章「节拍」对应大纲子段落；人物名请与关系图一致。<strong>人物关系请在「知识库」中编辑三元组。</strong>
+        </span>
+      </div>
 
-      <n-tab-pane name="premise" tab="梗概锁定">
+      <n-tabs
+        v-model:value="subTab"
+        type="line"
+        size="small"
+        animated
+        class="kp-subtabs"
+      >
+        <n-tab-pane name="premise" tab="梗概锁定">
         <section class="kp-section">
         <div class="kp-section-head">
           <span class="kp-section-icon">◆</span>
@@ -279,8 +280,8 @@ const data = ref({
 
 const saving = ref(false)
 const generating = ref(false)
-const sideTab = ref<'narrative' | 'graph' | 'knowledge'>('narrative')
-const subTab = ref<'search' | 'premise' | 'chapters' | 'facts'>('search')
+const sideTab = ref<'search' | 'narrative' | 'graph' | 'knowledge'>('search')
+const subTab = ref<'premise' | 'chapters'>('premise')
 const outlineTitles = ref<Record<number, string>>({})
 const searchQ = ref('')
 const searching = ref(false)

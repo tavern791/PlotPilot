@@ -3,6 +3,7 @@
     <n-page-header @back="handleBack" title="地点关系图">
       <template #extra>
         <n-space>
+          <n-button type="primary" @click="openTriplesDrawer()">三元组表格</n-button>
           <n-button @click="handleRefresh" :loading="loading">
             <template #icon>
               <n-icon><RefreshOutline /></n-icon>
@@ -17,6 +18,7 @@
       <div class="graph-main">
         <LocationRelationGraph
           v-if="novelId"
+          ref="locGraphRef"
           :slug="novelId"
           @loading="loading = $event"
           @node-click="handleNodeClick"
@@ -26,6 +28,15 @@
         <n-tabs v-model:value="activeTab" type="segment" animated>
           <n-tab-pane name="node" tab="地点详情">
             <div v-if="selectedNode" class="side-form">
+              <n-button
+                block
+                type="primary"
+                size="small"
+                style="margin-bottom: 12px"
+                @click="openTriplesDrawer(selectedNode.name)"
+              >
+                编辑此地点相关三元组
+              </n-button>
               <n-descriptions label-placement="left" :column="1" bordered size="small">
                 <n-descriptions-item label="名称">{{ selectedNode.name }}</n-descriptions-item>
                 <n-descriptions-item label="类型" v-if="selectedNode.location_type">
@@ -71,21 +82,54 @@
         </n-tabs>
       </aside>
     </div>
+
+    <n-drawer v-model:show="triplesDrawerOpen" :width="920" placement="right" display-directive="if">
+      <n-drawer-content title="地点相关三元组" closable>
+        <KnowledgeTriplesTableEditor
+          v-if="triplesDrawerOpen"
+          :key="triplesDrawerKey"
+          :slug="novelId"
+          default-entity-filter="location"
+          :focus-entity-name="triplesDrawerFocus"
+          @saved="onTriplesSaved"
+        />
+      </n-drawer-content>
+    </n-drawer>
   </div>
 </template>
 
 <script setup lang="ts">
 import { ref, computed } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { NPageHeader, NButton, NSpace, NIcon, NTabs, NTabPane, NDescriptions, NDescriptionsItem, NTag, NEmpty } from 'naive-ui'
+import {
+  NPageHeader,
+  NButton,
+  NSpace,
+  NIcon,
+  NTabs,
+  NTabPane,
+  NDescriptions,
+  NDescriptionsItem,
+  NTag,
+  NEmpty,
+  NDrawer,
+  NDrawerContent,
+} from 'naive-ui'
 import { RefreshOutline } from '@vicons/ionicons5'
 import LocationRelationGraph from '../components/LocationRelationGraph.vue'
+import KnowledgeTriplesTableEditor from '../components/KnowledgeTriplesTableEditor.vue'
 import type { EChartsNode } from '../utils/visToEcharts'
+import type { ComponentPublicInstance } from 'vue'
 
 const route = useRoute()
 const router = useRouter()
 const loading = ref(false)
 const activeTab = ref<'node'>('node')
+
+const locGraphRef = ref<ComponentPublicInstance<{ reload: () => Promise<void> }> | null>(null)
+const triplesDrawerOpen = ref(false)
+const triplesDrawerFocus = ref('')
+const triplesDrawerKey = ref(0)
 
 interface LocationNode extends EChartsNode {
   location_type?: string
@@ -112,6 +156,16 @@ const handleRefresh = () => {
 const handleNodeClick = (node: EChartsNode) => {
   selectedNode.value = node as LocationNode
   activeTab.value = 'node'
+}
+
+const openTriplesDrawer = (focusName?: string) => {
+  triplesDrawerFocus.value = (focusName || '').trim()
+  triplesDrawerKey.value += 1
+  triplesDrawerOpen.value = true
+}
+
+const onTriplesSaved = async () => {
+  await locGraphRef.value?.reload?.()
 }
 
 const locationTypeLabel = (type: string) => {
