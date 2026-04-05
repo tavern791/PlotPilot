@@ -629,19 +629,207 @@ class ContinuousPlanningService:
 
         return json.loads(content)
 
-    def _build_macro_planning_prompt(self, bible_context: Dict, target_chapters: int, structure_preference: Dict) -> Prompt:
-        """构建宏观规划提示词"""
-        system_msg = """你是一个专业的小说结构规划助手，擅长设计合理的故事结构。
-你的任务是根据用户提供的参数生成一个结构框架，即使没有详细的世界观信息也要生成。
-请直接输出 JSON 格式的结构，不要询问额外信息，不要添加任何解释性文字。"""
+    def _calculate_chapter_distribution(self, total_chapters: int, parts: int) -> Dict[str, List[int]]:
+        """计算黄金比例的章数分配
 
-        user_msg = f"""请为小说生成宏观规划，要求：
-- 目标章节数：{target_chapters}章
-- 结构：{structure_preference.get('parts', 3)}部，每部{structure_preference.get('volumes_per_part', 3)}卷，每卷{structure_preference.get('acts_per_volume', 3)}幕
+        核心算法：
+        - 3部：25% - 50% - 25% (起源-深渊-决战)
+        - 4部：20% - 30% - 30% - 20% (双峰中段)
+        - 5部+：首尾各20%，中间平分剩余60%
 
-如果没有提供世界观信息，请生成一个通用的结构框架，使用占位符标题（如"第一部"、"第一卷"、"第一幕"等）。
+        Returns:
+            {
+                "part_chapters": [250, 500, 250],  # 每部的章数
+                "part_ratios": [0.25, 0.5, 0.25]   # 每部的占比
+            }
+        """
+        if parts == 1:
+            return {"part_chapters": [total_chapters], "part_ratios": [1.0]}
 
-必须严格按照以下 JSON 格式输出，不要添加任何其他文字：
+        if parts == 2:
+            # 双部结构：40% - 60% (铺垫-高潮)
+            p1 = int(total_chapters * 0.4)
+            p2 = total_chapters - p1
+            return {"part_chapters": [p1, p2], "part_ratios": [0.4, 0.6]}
+
+        if parts == 3:
+            # 经典三幕剧：25% - 50% - 25%
+            p1 = int(total_chapters * 0.25)
+            p3 = int(total_chapters * 0.25)
+            p2 = total_chapters - p1 - p3
+            return {"part_chapters": [p1, p2, p3], "part_ratios": [0.25, 0.5, 0.25]}
+
+        if parts == 4:
+            # 双峰中段：20% - 30% - 30% - 20%
+            p1 = int(total_chapters * 0.2)
+            p4 = int(total_chapters * 0.2)
+            remaining = total_chapters - p1 - p4
+            p2 = remaining // 2
+            p3 = remaining - p2
+            return {"part_chapters": [p1, p2, p3, p4], "part_ratios": [0.2, 0.3, 0.3, 0.2]}
+
+        # 5部及以上：首尾各20%，中间平分60%
+        first = int(total_chapters * 0.2)
+        last = int(total_chapters * 0.2)
+        middle_total = total_chapters - first - last
+        middle_parts = parts - 2
+        middle_each = middle_total // middle_parts
+
+        part_chapters = [first]
+        for i in range(middle_parts):
+            if i == middle_parts - 1:
+                # 最后一个中间部分吃掉余数
+                part_chapters.append(middle_total - middle_each * (middle_parts - 1))
+            else:
+                part_chapters.append(middle_each)
+        part_chapters.append(last)
+
+        part_ratios = [c / total_chapters for c in part_chapters]
+        return {"part_chapters": part_chapters, "part_ratios": part_ratios}
+
+    def _build_quick_macro_prompt(self, bible_context: Dict, target_chapters: int) -> Prompt:
+        """极速模式：破城槌提示词
+
+        设计哲学：
+        - 允许AI犯错，用"粗糙的泥胚"激发作者的对抗欲
+        - 强调商业爆点、极端冲突、套路化节奏
+        - 不给章数限制，让AI撒欢去写
+        """
+        system_msg = """# 角色设定
+你是一位狂热且极具市场敏锐度的顶级网文主编，精通"退婚流"、"克苏鲁修仙"、"赛博朋克反乌托邦"等各种爆款商业节奏。你的任务是帮作者打破"白纸恐惧"，利用他给出的寥寥几个设定，瞬间推演填补出一个完整、宏大、且充满极端冲突的长篇叙事骨架。
+
+# 核心推演铁律（The Icebreaker Rules）
+<CONSTRAINTS>
+1. 极致冲突：每一部、每一卷的结尾，必须有一个生死攸关、或世界观颠覆的"大悬念"。绝不要写平淡的日常过渡！
+2. 允许刻板印象：为了快速建立骨架，你可以大胆使用经典的商业套路（如：挚友背叛、深渊凝视、高维降临、底层的逆袭反杀），但必须披上作者给定的世界观外衣。
+3. 粗线条描绘：不要纠结具体的章节字数，用极具煽动性和画面感的语言描述每一幕的【核心事件】和【情绪反转】。
+4. 商业节奏：第一部快速抛出核心悬念，第二部制造中段危机（主角信念崩溃或次要反派崛起），第三部爆发式收网。
+</CONSTRAINTS>
+
+# 输出要求
+请直接输出JSON格式，严格包含3部，每部3卷，每卷3幕（共27幕）。
+每幕（Act）的输出字段必须包含：
+- "title": "具有商业爆点的幕标题（如：血染青铜门）"
+- "core_conflict": "谁对抗谁？赌注是什么？（如：李明 vs 财阀执法队，赌注是妹妹的机械心脏）"
+- "description": "一句话概括本幕发生了什么极具张力的事件"
+
+不要添加任何解释性文字，不要询问额外信息。"""
+
+        # 构建世界观上下文
+        worldview_context = "【世界观与人物】\n"
+        if bible_context.get("worldview"):
+            worldview_context += f"世界观：{bible_context['worldview']}\n"
+        if bible_context.get("characters"):
+            char_names = [c.get('name', 'Unknown') for c in bible_context['characters'][:3]]
+            worldview_context += f"主要人物：{', '.join(char_names)}\n"
+
+        if worldview_context == "【世界观与人物】\n":
+            worldview_context = "【世界观与人物】\n暂无详细设定，请基于通用的商业小说套路生成结构。\n"
+
+        user_msg = f"""<WORLDVIEW_AND_PROTAGONIST>
+{worldview_context}
+</WORLDVIEW_AND_PROTAGONIST>
+
+目标篇幅：约 {target_chapters} 章（供参考，不必精确分配）
+
+请立即生成3部×3卷×3幕=27幕的叙事骨架，JSON格式：
+{{
+  "parts": [
+    {{
+      "title": "部标题（如：起源之章）",
+      "volumes": [
+        {{
+          "title": "卷标题（如：觉醒）",
+          "acts": [
+            {{
+              "title": "幕标题（如：血染青铜门）",
+              "core_conflict": "冲突描述",
+              "description": "情节摘要"
+            }}
+          ]
+        }}
+      ]
+    }}
+  ]
+}}"""
+        return Prompt(system=system_msg, user=user_msg)
+
+    def _build_precise_macro_prompt(self, bible_context: Dict, target_chapters: int, structure_preference: Dict) -> Prompt:
+        """精密模式：手术刀提示词
+
+        设计哲学：
+        - 捍卫创作者的绝对主权与节奏感
+        - 严格遵守用户指定的结构网格和字数节奏
+        - 强调逻辑严密、中段支撑、情节容量匹配
+        """
+        parts = structure_preference.get('parts', 3)
+        volumes_per_part = structure_preference.get('volumes_per_part', 3)
+        acts_per_volume = structure_preference.get('acts_per_volume', 3)
+
+        # 计算章数分配
+        distribution = self._calculate_chapter_distribution(target_chapters, parts)
+        part_chapters = distribution["part_chapters"]
+
+        # 构建动态章节配额指示
+        pacing_guide = "<PACING_GUIDE>\n"
+        for i, chapters in enumerate(part_chapters, 1):
+            if i == 1:
+                pacing_guide += f"- 第{i}部（起源）：分配 {chapters} 章。情节要求：紧凑、抛出核心悬念。\n"
+            elif i == parts:
+                pacing_guide += f"- 第{i}部（决战）：分配 {chapters} 章。情节要求：收束所有主线，节奏极快。\n"
+            else:
+                pacing_guide += f"- 第{i}部（发展/深渊）：分配 {chapters} 章。情节要求：容量极大，需要多方势力博弈。\n"
+        pacing_guide += "</PACING_GUIDE>"
+
+        system_msg = f"""# 角色设定
+你是一位极其理性的长篇小说结构架构师。作者正在进行一项严密的叙事工程。他设定了极其精确的篇幅限制和结构分布。你的任务是像外科手术一样，在严格遵守作者给定的"结构网格"和"字数节奏"的前提下，分配情节张力，确保中段不塌陷，高潮不疲软。
+
+# 精密推演铁律（The Scalpel Rules）
+<CONSTRAINTS>
+1. 节奏匹配：系统已为你计算好每部的【预估章数配额】（见下方指示）。你设计的情节容量，必须能撑起这个章数！
+   - 例如：如果某部分配了150章，你必须设计【多线叙事】或【复杂的长线副本】；如果某部只有30章，情节必须是【单线程的快速高潮】。
+2. 逻辑严密：严禁使用突兀的机械降神。所有的转折必须基于现有的设定进行逻辑推演。
+3. 中段支撑：在中间部分（非首尾）必须设计"次要反派的崛起"或"主角信念的暂时崩溃"，以维持长篇连载的订阅张力。
+4. 结构网格绝对服从：必须严格输出 {parts} 部 × {volumes_per_part} 卷/部 × {acts_per_volume} 幕/卷，不得多一个或少一个节点。
+</CONSTRAINTS>
+
+{pacing_guide}
+
+# 输出要求
+请直接输出JSON格式，层级必须严格吻合结构网格。
+每幕（Act）的输出字段必须包含：
+- "title": "精准的情节标题"
+- "estimated_chapters": 本幕预计占用的章数（请参考<PACING_GUIDE>合理分配）
+- "narrative_goal": "本幕在整个故事结构中承担的叙事功能（如：引出副线、主角遭遇重大挫折）"
+- "description": "严谨的剧情走向摘要"
+
+不要添加任何解释性文字，不要询问额外信息。"""
+
+        # 构建世界观上下文
+        worldview_context = "【世界观与人物】\n"
+        if bible_context.get("worldview"):
+            worldview_context += f"世界观：{bible_context['worldview']}\n"
+        if bible_context.get("characters"):
+            char_list = [f"- {c.get('name', 'Unknown')} (ID: {c.get('id', 'N/A')})" for c in bible_context['characters'][:5]]
+            worldview_context += "可用人物：\n" + "\n".join(char_list) + "\n"
+        if bible_context.get("locations"):
+            loc_list = [f"- {l.get('name', 'Unknown')} (ID: {l.get('id', 'N/A')})" for l in bible_context['locations'][:5]]
+            worldview_context += "可用地点：\n" + "\n".join(loc_list) + "\n"
+
+        if worldview_context == "【世界观与人物】\n":
+            worldview_context = "【世界观与人物】\n暂无详细设定，请生成通用的结构框架。\n"
+
+        user_msg = f"""<STORY_CONTEXT>
+{worldview_context}
+</STORY_CONTEXT>
+
+<STRUCTURAL_GRID>
+【你必须绝对服从的物理网格】
+- 目标总章数：{target_chapters} 章
+- 结构分布：{parts} 部 × {volumes_per_part} 卷/部 × {acts_per_volume} 幕/卷
+</STRUCTURAL_GRID>
+
+请生成严格符合上述网格的叙事结构，JSON格式：
 {{
   "parts": [
     {{
@@ -650,7 +838,12 @@ class ContinuousPlanningService:
         {{
           "title": "卷标题",
           "acts": [
-            {{"title": "幕标题", "description": "幕简介"}}
+            {{
+              "title": "幕标题",
+              "estimated_chapters": 25,
+              "narrative_goal": "叙事功能",
+              "description": "剧情摘要"
+            }}
           ]
         }}
       ]
@@ -658,6 +851,20 @@ class ContinuousPlanningService:
   ]
 }}"""
         return Prompt(system=system_msg, user=user_msg)
+
+    def _build_macro_planning_prompt(self, bible_context: Dict, target_chapters: int, structure_preference: Dict) -> Prompt:
+        """构建宏观规划提示词（向后兼容的包装器）
+
+        根据 structure_preference 是否为 None 来判断模式：
+        - None: 极速模式（AI自主决定）
+        - Dict: 精密模式（用户指定结构）
+        """
+        if structure_preference is None:
+            # 极速模式：使用默认的3×3×3结构
+            return self._build_quick_macro_prompt(bible_context, target_chapters)
+        else:
+            # 精密模式：使用用户指定的结构
+            return self._build_precise_macro_prompt(bible_context, target_chapters, structure_preference)
 
     def _build_act_planning_prompt(self, act_node: StoryNode, bible_context: Dict, previous_summary: Optional[str], chapter_count: int) -> Prompt:
         """构建幕级规划提示词"""
