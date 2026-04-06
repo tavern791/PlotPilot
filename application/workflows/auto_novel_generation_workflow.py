@@ -107,6 +107,67 @@ class AutoNovelGenerationWorkflow:
         self.voice_fingerprint_service = voice_fingerprint_service
         self.cliche_scanner = cliche_scanner
 
+    def prepare_chapter_generation(
+        self,
+        novel_id: str,
+        chapter_number: int,
+        outline: str,
+        *,
+        scene_director: Optional[SceneDirectorAnalysis] = None,
+        max_tokens: int = 35000,
+    ) -> Dict[str, Any]:
+        """与单章 / 流式 / 托管按节拍写作同源：结构化三层上下文 + 故事线 + 张力 + 文风。
+
+        托管守护进程与 HTTP 接口应复用此方法，避免「两套基建」。
+        """
+        storyline_context = self._get_storyline_context(novel_id, chapter_number)
+        plot_tension = self._get_plot_tension(novel_id, chapter_number)
+        payload = self.context_builder.build_structured_context(
+            novel_id=novel_id,
+            chapter_number=chapter_number,
+            outline=outline,
+            max_tokens=max_tokens,
+            scene_director=scene_director,
+        )
+        context = (
+            f"{payload['layer1_text']}\n\n=== SMART RETRIEVAL ===\n{payload['layer2_text']}\n\n"
+            f"=== RECENT CONTEXT ===\n{payload['layer3_text']}"
+        )
+        context_tokens = payload["token_usage"]["total"]
+        style_summary = self._get_style_summary(novel_id)
+        return {
+            "storyline_context": storyline_context,
+            "plot_tension": plot_tension,
+            "context": context,
+            "context_tokens": context_tokens,
+            "style_summary": style_summary,
+        }
+
+    async def post_process_generated_chapter(
+        self,
+        novel_id: str,
+        chapter_number: int,
+        outline: str,
+        content: str,
+        scene_director: Optional[SceneDirectorAnalysis] = None,
+    ) -> Dict[str, Any]:
+        """生成正文后的统一后处理：俗套扫描、状态提取、一致性、冲突批注、StateUpdater。"""
+        style_warnings = self._scan_cliches(content)
+        chapter_state = await self._extract_chapter_state(content, chapter_number)
+        consistency_report = self._check_consistency(chapter_state, novel_id)
+        ghost_annotations = self._detect_conflicts(novel_id, chapter_number, outline, scene_director)
+        if self.state_updater:
+            try:
+                self.state_updater.update_from_chapter(novel_id, chapter_number, chapter_state)
+            except Exception as e:
+                logger.warning("StateUpdater 失败: %s", e)
+        return {
+            "style_warnings": style_warnings,
+            "chapter_state": chapter_state,
+            "consistency_report": consistency_report,
+            "ghost_annotations": ghost_annotations,
+        }
+
     async def generate_chapter(
         self,
         novel_id: str,
@@ -140,39 +201,21 @@ class AutoNovelGenerationWorkflow:
         logger.info(f"大纲: {outline[:100]}...")
         logger.info(f"========================================")
 
-        # Phase 1: Planning - 获取故事线和情节弧信息
-        logger.info("阶段 1: 规划 - 获取故事线和情节上下文")
-        storyline_context = self._get_storyline_context(novel_id, chapter_number)
-        logger.info(f"  ✓ 故事线上下文: {len(storyline_context)} 字符")
-        plot_tension = self._get_plot_tension(novel_id, chapter_number)
-        logger.info(f"  ✓ 情节张力: {plot_tension[:100]}...")
-
-        # Phase 2: Pre-Generation - 构建上下文
-        logger.info("阶段 2: 预生成 - 构建上下文")
-        payload = self.context_builder.build_structured_context(
-            novel_id=novel_id,
-            chapter_number=chapter_number,
-            outline=outline,
-            max_tokens=35000,
-            scene_director=scene_director
+        logger.info("阶段 1-2: 规划 + 结构化上下文（prepare_chapter_generation）")
+        bundle = self.prepare_chapter_generation(
+            novel_id, chapter_number, outline, scene_director=scene_director
         )
-        context = f"{payload['layer1_text']}\n\n=== SMART RETRIEVAL ===\n{payload['layer2_text']}\n\n=== RECENT CONTEXT ===\n{payload['layer3_text']}"
-        context_tokens = payload['token_usage']['total']
+        context = bundle["context"]
+        context_tokens = bundle["context_tokens"]
         logger.info(f"  ✓ 上下文已构建: {len(context)} 字符, 约 {context_tokens} tokens")
 
-        # Phase 2.5: Style Fingerprint - 获取风格指纹摘要（如果可用）
-        style_summary = self._get_style_summary(novel_id)
-        if style_summary:
-            logger.info(f"  ✓ 风格指纹摘要已加载: {len(style_summary)} 字符")
-
-        # Phase 3: Generation - 调用 LLM
         logger.info("阶段 3: 生成 - 调用 LLM")
         prompt = self._build_prompt(
             context,
             outline,
-            storyline_context=storyline_context,
-            plot_tension=plot_tension,
-            style_summary=style_summary,
+            storyline_context=bundle["storyline_context"],
+            plot_tension=bundle["plot_tension"],
+            style_summary=bundle["style_summary"],
         )
         config = GenerationConfig()
         logger.info(f"  → 发送请求到 LLM (max_tokens={config.max_tokens}, temperature={config.temperature})")
@@ -180,30 +223,15 @@ class AutoNovelGenerationWorkflow:
         content = llm_result.content
         logger.info(f"  ✓ LLM 响应已接收: {len(content)} 字符")
 
-        # Phase 3.5: Cliche Scanning - 扫描俗套句式（如果可用）
-        style_warnings = self._scan_cliches(content)
+        logger.info("阶段 4: 后处理（post_process_generated_chapter）")
+        post = await self.post_process_generated_chapter(
+            novel_id, chapter_number, outline, content, scene_director=scene_director
+        )
+        style_warnings = post["style_warnings"]
+        consistency_report = post["consistency_report"]
+        ghost_annotations = post["ghost_annotations"]
         if style_warnings:
             logger.info(f"  ✓ 俗套扫描: 检测到 {len(style_warnings)} 个俗套句式")
-
-        # Phase 4: Post-Generation - 提取状态和检查一致性
-        logger.info("阶段 4: 后处理 - 提取状态和检查一致性")
-        chapter_state = await self._extract_chapter_state(content, chapter_number)
-        logger.info(f"  ✓ 状态已提取: {len(chapter_state.new_characters)} 个新角色, {len(chapter_state.events)} 个事件")
-        consistency_report = self._check_consistency(chapter_state, novel_id)
-        logger.info(f"  ✓ 一致性检查: {len(consistency_report.issues)} 个问题, {len(consistency_report.warnings)} 个警告")
-
-        # Phase 4.3: Conflict Detection - 检测冲突并生成批注
-        ghost_annotations = self._detect_conflicts(novel_id, chapter_number, outline, scene_director)
-        logger.info(f"  ✓ 冲突检测: {len(ghost_annotations)} 个批注")
-
-        # Phase 4.5: Update State - 更新 Bible 和 Knowledge
-        if self.state_updater:
-            try:
-                logger.info(f"阶段 4.5: 更新状态 - 更新 Bible 和 Knowledge (章节 {chapter_number})")
-                self.state_updater.update_from_chapter(novel_id, chapter_number, chapter_state)
-                logger.info("  ✓ 状态更新完成")
-            except Exception as e:
-                logger.warning(f"  × StateUpdater 失败: {e}")
 
         # Phase 5: Review - 返回结果
         logger.info(f"阶段 5: 完成 - 章节生成完成")
@@ -248,37 +276,23 @@ class AutoNovelGenerationWorkflow:
             logger.info(f"========================================")
 
             yield {"type": "phase", "phase": "planning"}
-            logger.info("阶段 1: 规划 - 获取故事线和情节上下文")
-            storyline_context = self._get_storyline_context(novel_id, chapter_number)
-            plot_tension = self._get_plot_tension(novel_id, chapter_number)
-            logger.info("  ✓ 规划阶段完成")
-
             yield {"type": "phase", "phase": "context"}
-            logger.info("阶段 2: 预生成 - 构建上下文")
-            payload = self.context_builder.build_structured_context(
-                novel_id=novel_id,
-                chapter_number=chapter_number,
-                outline=outline,
-                max_tokens=35000,
-                scene_director=scene_director
+            logger.info("阶段 1-2: prepare_chapter_generation（规划 + 结构化上下文）")
+            bundle = self.prepare_chapter_generation(
+                novel_id, chapter_number, outline, scene_director=scene_director
             )
-            context = f"{payload['layer1_text']}\n\n=== SMART RETRIEVAL ===\n{payload['layer2_text']}\n\n=== RECENT CONTEXT ===\n{payload['layer3_text']}"
-            context_tokens = payload['token_usage']['total']
+            context = bundle["context"]
+            context_tokens = bundle["context_tokens"]
             logger.info(f"  ✓ 上下文已构建: {len(context)} 字符, 约 {context_tokens} tokens")
-
-            # Phase 2.5: Style Fingerprint - 获取风格指纹摘要（如果可用）
-            style_summary = self._get_style_summary(novel_id)
-            if style_summary:
-                logger.info(f"  ✓ 风格指纹摘要已加载: {len(style_summary)} 字符")
 
             yield {"type": "phase", "phase": "llm"}
             logger.info("阶段 3: 生成 - 调用 LLM 流式生成")
             prompt = self._build_prompt(
                 context,
                 outline,
-                storyline_context=storyline_context,
-                plot_tension=plot_tension,
-                style_summary=style_summary,
+                storyline_context=bundle["storyline_context"],
+                plot_tension=bundle["plot_tension"],
+                style_summary=bundle["style_summary"],
             )
             config = GenerationConfig()
             logger.info(f"  → 发送流式请求到 LLM")
@@ -297,30 +311,16 @@ class AutoNovelGenerationWorkflow:
                 yield {"type": "error", "message": "模型返回空内容"}
                 return
 
-            # Phase 3.5: Cliche Scanning - 扫描俗套句式（如果可用）
-            style_warnings = self._scan_cliches(content)
+            yield {"type": "phase", "phase": "post"}
+            logger.info("阶段 4: post_process_generated_chapter")
+            post = await self.post_process_generated_chapter(
+                novel_id, chapter_number, outline, content, scene_director=scene_director
+            )
+            style_warnings = post["style_warnings"]
+            consistency_report = post["consistency_report"]
+            ghost_annotations = post["ghost_annotations"]
             if style_warnings:
                 logger.info(f"  ✓ 俗套扫描: 检测到 {len(style_warnings)} 个俗套句式")
-
-            yield {"type": "phase", "phase": "post"}
-            logger.info("阶段 4: 后处理 - 提取状态和检查一致性")
-            chapter_state = await self._extract_chapter_state(content, chapter_number)
-            logger.info(f"  ✓ 状态已提取: {len(chapter_state.new_characters)} 个新角色, {len(chapter_state.events)} 个事件")
-            consistency_report = self._check_consistency(chapter_state, novel_id)
-            logger.info(f"  ✓ 一致性检查: {len(consistency_report.issues)} 个问题, {len(consistency_report.warnings)} 个警告")
-
-            # Phase 4.3: Conflict Detection - 检测冲突并生成批注
-            ghost_annotations = self._detect_conflicts(novel_id, chapter_number, outline, scene_director)
-            logger.info(f"  ✓ 冲突检测: {len(ghost_annotations)} 个批注")
-
-            # Phase 4.5: Update State - 更新 Bible 和 Knowledge
-            if self.state_updater:
-                try:
-                    logger.info(f"阶段 4.5: 更新状态 - 更新 Bible 和 Knowledge")
-                    self.state_updater.update_from_chapter(novel_id, chapter_number, chapter_state)
-                    logger.info("  ✓ 状态更新完成")
-                except Exception as e:
-                    logger.warning(f"  × StateUpdater 失败: {e}")
 
             token_count = context_tokens
             logger.info(f"========================================")
@@ -462,6 +462,32 @@ class AutoNovelGenerationWorkflow:
             logger.warning(f"Failed to get plot tension: {e}")
             return "Plot tension unavailable"
 
+    def build_chapter_prompt(
+        self,
+        context: str,
+        outline: str,
+        *,
+        storyline_context: str = "",
+        plot_tension: str = "",
+        style_summary: str = "",
+        beat_prompt: Optional[str] = None,
+        beat_index: Optional[int] = None,
+        total_beats: Optional[int] = None,
+        beat_target_words: Optional[int] = None,
+    ) -> Prompt:
+        """构建与 HTTP 单章 / 流式 / 托管按节拍写作一致的 Prompt（对外 API）。"""
+        return self._build_prompt(
+            context,
+            outline,
+            storyline_context=storyline_context,
+            plot_tension=plot_tension,
+            style_summary=style_summary,
+            beat_prompt=beat_prompt,
+            beat_index=beat_index,
+            total_beats=total_beats,
+            beat_target_words=beat_target_words,
+        )
+
     def _build_prompt(
         self,
         context: str,
@@ -470,6 +496,10 @@ class AutoNovelGenerationWorkflow:
         storyline_context: str = "",
         plot_tension: str = "",
         style_summary: str = "",
+        beat_prompt: Optional[str] = None,
+        beat_index: Optional[int] = None,
+        total_beats: Optional[int] = None,
+        beat_target_words: Optional[int] = None,
     ) -> Prompt:
         """构建 LLM 提示词
 
@@ -479,6 +509,9 @@ class AutoNovelGenerationWorkflow:
             storyline_context: 当前章相关故事线与里程碑（Phase 1）
             plot_tension: 情节弧期望张力与下一锚点（Phase 1）
             style_summary: 风格指纹摘要（Phase 2.5）
+            beat_prompt: 非空时进入「分节拍」模式（托管断点续写）
+            beat_index / total_beats: 节拍序号（0-based / 总数）
+            beat_target_words: 本段目标字数（分节拍时覆盖「整章 2000-3000 字」说明）
 
         Returns:
             Prompt 对象
@@ -500,6 +533,19 @@ class AutoNovelGenerationWorkflow:
                 + "\n\n以上约束须与本章大纲及后文 Bible/摘要一致；不得与之矛盾。\n"
             )
 
+        beat_mode = bool((beat_prompt or "").strip())
+        length_rule = (
+            f"7. 本段约 {beat_target_words} 字（本章分多节输出之一，勿写章节标题）"
+            if beat_target_words
+            else ("7. 章节长度：2000-3000字" if not beat_mode else "7. 按下方节拍说明控制篇幅，勿写章节标题")
+        )
+        beat_extra = ""
+        if beat_mode and beat_index is not None and total_beats is not None and total_beats > 0:
+            beat_extra = (
+                f"\n9. 这是本章第 {beat_index + 1}/{total_beats} 段输出；若非第一段，须承接上文语义，"
+                "不要重复已写内容。\n"
+            )
+
         system_message = f"""你是一位专业的网络小说作家。根据以下上下文撰写章节内容。
 
 {planning_section}{context}
@@ -511,8 +557,8 @@ class AutoNovelGenerationWorkflow:
 4. 保持人物性格一致
 5. 推进情节发展
 6. 使用生动的场景描写和细节
-7. 章节长度：2000-3000字
-8. 用中文写作，使用第三人称叙事"""
+{length_rule}
+8. 用中文写作，使用第三人称叙事{beat_extra}"""
 
         user_message = f"""请根据以下大纲撰写本章内容：
 
@@ -524,9 +570,19 @@ class AutoNovelGenerationWorkflow:
 - 必须有明确的冲突或戏剧张力
 - 场景要具体生动，不要空泛叙述
 - 推进主线情节，不要原地踏步
-- 结尾要有悬念或转折
+- 结尾要有悬念或转折"""
 
-开始撰写："""
+        if beat_mode:
+            bi = beat_index if beat_index is not None else 0
+            tb = total_beats if total_beats is not None else 1
+            user_message += f"""
+
+【节拍 {bi + 1}/{tb}】
+{(beat_prompt or '').strip()}
+
+本段只写该节拍对应正文，与上文衔接自然。"""
+
+        user_message += "\n\n开始撰写："
 
         return Prompt(system=system_message, user=user_message)
 

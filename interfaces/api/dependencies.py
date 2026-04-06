@@ -8,6 +8,8 @@ from pathlib import Path
 from functools import lru_cache
 from typing import TYPE_CHECKING, Optional
 
+from domain.ai.services.llm_service import LLMService
+
 if TYPE_CHECKING:
     from application.engine.services.scene_director_service import SceneDirectorService
     from infrastructure.ai.qdrant_vector_store import QdrantVectorStore
@@ -409,21 +411,8 @@ def get_context_builder() -> ContextBuilder:
     )
 
 
-def get_auto_workflow() -> AutoNovelGenerationWorkflow:
-    """获取自动小说生成工作流
-
-    Returns:
-        AutoNovelGenerationWorkflow 实例
-    """
-    settings = _anthropic_settings(require_key=False)
-    if settings:
-        llm_service = AnthropicProvider(settings)
-        logger.info("Using AnthropicProvider for workflow")
-    else:
-        from infrastructure.ai.providers.mock_provider import MockProvider
-        llm_service = MockProvider()
-        logger.warning("No API key found, using MockProvider for workflow")
-
+def build_auto_workflow(llm_service: LLMService) -> AutoNovelGenerationWorkflow:
+    """用指定 LLM 实例构造章节工作流（与守护进程、API 共用同一 provider 时注入同一实例）。"""
     from application.audit.services.conflict_detection_service import ConflictDetectionService
     from application.audit.services.cliche_scanner import ClicheScanner
 
@@ -441,6 +430,24 @@ def get_auto_workflow() -> AutoNovelGenerationWorkflow:
         conflict_detection_service=ConflictDetectionService(),
         cliche_scanner=ClicheScanner(),
     )
+
+
+def get_auto_workflow() -> AutoNovelGenerationWorkflow:
+    """获取自动小说生成工作流
+
+    Returns:
+        AutoNovelGenerationWorkflow 实例
+    """
+    settings = _anthropic_settings(require_key=False)
+    if settings:
+        llm_service = AnthropicProvider(settings)
+        logger.info("Using AnthropicProvider for workflow")
+    else:
+        from infrastructure.ai.providers.mock_provider import MockProvider
+        llm_service = MockProvider()
+        logger.warning("No API key found, using MockProvider for workflow")
+
+    return build_auto_workflow(llm_service)
 
 
 def get_auto_bible_generator() -> AutoBibleGenerator:
