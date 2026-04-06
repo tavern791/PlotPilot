@@ -98,9 +98,34 @@ class AutopilotDaemon:
         """获取所有活跃小说（快速只读）"""
         return self.novel_repository.find_by_autopilot_status(AutopilotStatus.RUNNING.value)
 
+    def _merge_autopilot_status_from_db(self, novel: Novel) -> None:
+        """用户点「停止」只改 DB；写库前必须合并，否则会覆盖 STOPPED。"""
+        fresh = self.novel_repository.get_by_id(novel.novel_id)
+        if fresh:
+            novel.autopilot_status = fresh.autopilot_status
+
+    def _is_still_running(self, novel: Novel) -> bool:
+        """从 DB 同步自动驾驶状态；非 RUNNING 时应立即结束本段处理。"""
+        self._merge_autopilot_status_from_db(novel)
+        return novel.autopilot_status == AutopilotStatus.RUNNING
+
+    def _flush_novel(self, novel: Novel) -> None:
+        """关键阶段立即写库，避免下一轮轮询仍读到旧 stage（重复幕级规划 / 重复日志）。"""
+        self._merge_autopilot_status_from_db(novel)
+        self.novel_repository.save(novel)
+
+    def _save_novel_state(self, novel: Novel) -> None:
+        """与 _flush_novel 相同语义：任意 save 前合并停止标志。"""
+        self._merge_autopilot_status_from_db(novel)
+        self.novel_repository.save(novel)
+
     async def _process_novel(self, novel: Novel):
         """处理单个小说（全流程）"""
         try:
+            if not self._is_still_running(novel):
+                logger.info(f"[{novel.novel_id}] 用户已停止自动驾驶，跳过本轮")
+                return
+
             stage_name = novel.current_stage.value
             logger.debug(f"[{novel.novel_id}] 当前阶段: {stage_name}")
 
@@ -120,17 +145,25 @@ class AutopilotDaemon:
                 logger.debug(f"[{novel.novel_id}] ⏸️  等待人工审阅")
                 return  # 人工干预点：不处理，等前端确认
 
-            # ✅ 保存状态（最小事务：只在这里写库）
-            self.novel_repository.save(novel)
+            # ✅ 收尾写库（合并 DB 停止标志，避免把用户「停止」写回 RUNNING）
+            self._merge_autopilot_status_from_db(novel)
+            if novel.autopilot_status == AutopilotStatus.RUNNING:
+                if self.circuit_breaker:
+                    self.circuit_breaker.record_success()
+                novel.consecutive_error_count = 0
+            else:
+                logger.info(f"[{novel.novel_id}] 💾 本轮结束（用户已停止，不再计成功/重置熔断）")
+            self._save_novel_state(novel)
             logger.debug(f"[{novel.novel_id}] 💾 状态已保存")
-
-            # 熔断器：成功则重置错误计数
-            if self.circuit_breaker:
-                self.circuit_breaker.record_success()
-            novel.consecutive_error_count = 0
 
         except Exception as e:
             logger.error(f"❌ [{novel.novel_id}] 处理失败: {e}", exc_info=True)
+
+            self._merge_autopilot_status_from_db(novel)
+            if novel.autopilot_status != AutopilotStatus.RUNNING:
+                logger.info(f"[{novel.novel_id}] 处理异常但用户已停止，不累计熔断/失败次数")
+                self._save_novel_state(novel)
+                return
 
             # 熔断器：记录失败
             if self.circuit_breaker:
@@ -143,10 +176,13 @@ class AutopilotDaemon:
                 novel.autopilot_status = AutopilotStatus.ERROR
             else:
                 logger.warning(f"⚠️  [{novel.novel_id}] 连续失败 {novel.consecutive_error_count}/3 次")
-            self.novel_repository.save(novel)
+            self._save_novel_state(novel)
 
     async def _handle_macro_planning(self, novel: Novel):
         """处理宏观规划（规划部/卷/幕）"""
+        if not self._is_still_running(novel):
+            return
+
         target_chapters = novel.target_chapters or 30
         structure_preference = {
             "parts": 1,
@@ -161,6 +197,10 @@ class AutopilotDaemon:
             structure_preference=structure_preference
         )
 
+        if not self._is_still_running(novel):
+            logger.info(f"[{novel.novel_id}] 宏观规划 LLM 返回后检测到停止，不再落库")
+            return
+
         struct = result.get("structure") if isinstance(result, dict) else None
         # 注意：structure 为 [] 时不能写 `if result.get("structure")`，否则会被当成失败分支且不落库
         if result.get("success") and isinstance(struct, list) and len(struct) > 0:
@@ -171,8 +211,9 @@ class AutopilotDaemon:
             )
             await self._create_minimal_structure(novel)
 
-        # ⏸ 幕级大纲已就绪，进入人工审阅点
+        # ⏸ 幕级大纲已就绪，进入人工审阅点（先落库再记日志，防止未保存导致下轮仍跑宏观规划）
         novel.current_stage = NovelStage.PAUSED_FOR_REVIEW
+        self._flush_novel(novel)
         logger.info(f"[{novel.novel_id}] 宏观规划完成，进入审阅等待")
 
     async def _confirm_macro_structure(self, novel: Novel, structure: list):
@@ -241,6 +282,9 @@ class AutopilotDaemon:
 
     async def _handle_act_planning(self, novel: Novel):
         """处理幕级规划（插入缓冲章策略）"""
+        if not self._is_still_running(novel):
+            return
+
         novel_id = novel.novel_id.value
         target_act_number = novel.current_act + 1  # 1-indexed
 
@@ -290,6 +334,10 @@ class AutopilotDaemon:
                 )
                 plan_result = {}
 
+            if not self._is_still_running(novel):
+                logger.info(f"[{novel.novel_id}] 幕级规划返回后检测到停止，不再落库")
+                return
+
             raw = plan_result.get("chapters")
             chapters_data: List[Dict[str, Any]] = raw if isinstance(raw, list) else []
             if not chapters_data:
@@ -320,15 +368,20 @@ class AutopilotDaemon:
         # 仅在本轮「新落库」幕级章节规划时暂停审阅；用户确认后同幕已有节点则直接写作，避免反复弹审批
         if just_created_chapter_plan:
             novel.current_stage = NovelStage.PAUSED_FOR_REVIEW
+            self._flush_novel(novel)
             logger.info(f"[{novel.novel_id}] 第 {target_act_number} 幕规划完成，进入审阅等待")
         else:
             novel.current_stage = NovelStage.WRITING
+            self._flush_novel(novel)
             logger.info(
                 f"[{novel.novel_id}] 第 {target_act_number} 幕章节节点已存在，进入写作"
             )
 
     async def _handle_writing(self, novel: Novel):
         """处理写作（节拍级幂等落库）"""
+        if not self._is_still_running(novel):
+            return
+
         # 1. 成本控制：达到最大章节数则自动停止
         max_chapters = novel.max_auto_chapters or 50
         if (novel.current_auto_chapters or 0) >= max_chapters:
@@ -362,6 +415,10 @@ class AutopilotDaemon:
         logger.info(f"[{novel.novel_id}] 📖 开始写第 {chapter_num} 章：{outline[:60]}...")
         logger.info(f"[{novel.novel_id}]    进度: {novel.current_auto_chapters or 0}/{novel.max_auto_chapters or 50} 章")
 
+        if not self._is_still_running(novel):
+            logger.info(f"[{novel.novel_id}] 用户已停止，跳过本章（上下文组装前）")
+            return
+
         # 4. 组装上下文（不持有数据库锁，纯读操作）
         context = ""
         if self.context_builder:
@@ -390,24 +447,48 @@ class AutopilotDaemon:
                 if i < start_beat:
                     continue  # 跳过已生成的节拍
 
+                if not self._is_still_running(novel):
+                    logger.info(f"[{novel.novel_id}] 用户已停止，中断本章（节拍 {i + 1}/{len(beats)} 前）")
+                    return
+
                 beat_prompt = self.context_builder.build_beat_prompt(beat, i, len(beats))
-                beat_content = await self._stream_one_beat(outline, context, beat_prompt, beat)
+                beat_content = await self._stream_one_beat(outline, context, beat_prompt, beat, novel=novel)
 
-                chapter_content += ("\n\n" if chapter_content else "") + beat_content
+                if beat_content.strip():
+                    chapter_content += ("\n\n" if chapter_content else "") + beat_content
+                    await self._upsert_chapter_content(novel, next_chapter_node, chapter_content, status="draft")
 
-                # ✅ 每节拍完成后立刻写库（最小事务）
-                await self._upsert_chapter_content(novel, next_chapter_node, chapter_content, status="draft")
+                if not self._is_still_running(novel):
+                    novel.current_beat_index = i
+                    self._flush_novel(novel)
+                    logger.info(
+                        f"[{novel.novel_id}] 用户已停止，中断节拍 {i + 1}/{len(beats)}"
+                        + ("（已保存已输出片段）" if beat_content.strip() else "（未产生文本）")
+                    )
+                    return
 
-                # 更新断点索引（写库后更新，保证原子性）
                 novel.current_beat_index = i + 1
-                self.novel_repository.save(novel)
+                self._flush_novel(novel)
 
                 logger.info(f"[{novel.novel_id}]    ✅ 节拍 {i+1}/{len(beats)} 完成: {len(beat_content)} 字")
         else:
             # 降级：无节拍，一次生成
-            beat_content = await self._stream_one_beat(outline, context, None, None)
+            if not self._is_still_running(novel):
+                logger.info(f"[{novel.novel_id}] 用户已停止，跳过单段生成")
+                return
+            beat_content = await self._stream_one_beat(outline, context, None, None, novel=novel)
+            if not self._is_still_running(novel):
+                logger.info(f"[{novel.novel_id}] 用户已停止，单段生成已中断")
+                novel.current_beat_index = 0
+                self._flush_novel(novel)
+                return
             chapter_content += beat_content
             await self._upsert_chapter_content(novel, next_chapter_node, chapter_content, status="draft")
+
+        if not self._is_still_running(novel):
+            logger.info(f"[{novel.novel_id}] 用户已停止，本章不标记完成")
+            self._flush_novel(novel)
+            return
 
         # 7. 章节完成，标记 completed
         await self._upsert_chapter_content(novel, next_chapter_node, chapter_content, status="completed")
@@ -422,6 +503,9 @@ class AutopilotDaemon:
 
     async def _handle_auditing(self, novel: Novel):
         """处理审计（含张力打分）"""
+        if not self._is_still_running(novel):
+            return
+
         chapter_num = novel.current_act * 10 + novel.current_chapter_in_act  # 刚写完的章节
 
         from domain.novel.value_objects.novel_id import NovelId
@@ -511,8 +595,8 @@ class AutopilotDaemon:
         except Exception:
             return 5  # 解析失败，返回默认值
 
-    async def _stream_one_beat(self, outline, context, beat_prompt, beat) -> str:
-        """流式生成单个节拍（或整章），返回生成内容"""
+    async def _stream_one_beat(self, outline, context, beat_prompt, beat, novel=None) -> str:
+        """流式生成单个节拍（或整章），返回生成内容。novel 传入时在流式过程中轮询 DB 是否已停止。"""
         system = """你是一位资深网文作家，擅长写爽文。
 写作要求：
 1. 严格按节拍字数和聚焦点写作
@@ -535,8 +619,15 @@ class AutopilotDaemon:
         config = GenerationConfig(max_tokens=max_tokens, temperature=0.85)
 
         content = ""
+        chunk_n = 0
         async for chunk in self.llm_service.stream_generate(prompt, config):
             content += chunk
+            chunk_n += 1
+            if novel and chunk_n % 10 == 0:
+                if not self._is_still_running(novel):
+                    nid = getattr(novel.novel_id, "value", novel.novel_id)
+                    logger.info(f"[{nid}] 流式生成中检测到停止，截断当前输出")
+                    break
 
         return content
 
