@@ -48,6 +48,7 @@ from interfaces.api.v1.engine import (
     context_intelligence,
     autopilot_routes,
     chronicles,
+    snapshot_routes,
     workbench_context_routes,
 )
 
@@ -133,6 +134,7 @@ app.include_router(story_structure.router, prefix="/api/v1")
 app.include_router(generation.router, prefix="/api/v1")
 app.include_router(context_intelligence.router, prefix="/api/v1")
 app.include_router(chronicles.router, prefix="/api/v1")
+app.include_router(snapshot_routes.router, prefix="/api/v1")
 app.include_router(autopilot_routes.router, prefix="/api/v1")
 app.include_router(workbench_context_routes.router, prefix="/api/v1")
 
