@@ -7,14 +7,13 @@
           <n-tag size="small" round :bordered="false">Macro</n-tag>
         </div>
         <p class="panel-lead">
-          Map-Reduce 式长文本理解入口：<strong>写</strong>仅在卷/部完成或人工触发时将提案写入 RefactorProposals；<strong>读</strong>在作者采纳后变为「补丁」，影响后续生成与对话中的自洽修补。
+          Map-Reduce 式长文本理解入口：写仅在卷/部完成或人工触发时将提案写入 RefactorProposals；读在作者采纳后变为「补丁」，影响后续生成与对话中的自洽修补。
+          <span class="panel-lead-accent">
+            当前 Step1–2 为人设冲突断点 + 提案；全书剧情 Bug 扫描可在同一弹层内扩展为左侧列表、右侧修复稿形态。
+          </span>
         </p>
       </div>
     </header>
-
-    <n-alert type="default" :show-icon="true" style="margin: 0 16px 12px; font-size: 12px">
-      当前 Step1–2 为人设冲突断点 + 提案；全书剧情 Bug 扫描可在同一弹层内扩展为左侧列表、右侧修复稿形态。
-    </n-alert>
 
     <n-alert
       v-if="macroDeskStale"
@@ -303,42 +302,126 @@ const resetAll = () => {
   display: flex;
   flex-direction: column;
   overflow-y: auto;
-  background: var(--aitext-panel-muted);
+  background: linear-gradient(to bottom, var(--n-color-modal) 0%, rgba(245, 158, 11, 0.02) 100%);
   gap: 0;
 }
 
 .panel-header {
-  padding: 14px 16px 12px;
+  padding: 16px 20px 14px;
   border-bottom: 1px solid var(--aitext-split-border);
   background: var(--app-surface);
   flex-shrink: 0;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.04);
 }
-.title-row { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
-.panel-title { margin: 0; font-size: 15px; font-weight: 600; }
-.panel-lead { margin: 0; font-size: 12px; line-height: 1.5; color: var(--text-color-3); }
+
+.title-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+
+.panel-title {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 700;
+  background: linear-gradient(135deg, #f59e0b 0%, #d97706 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+.panel-lead {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.65;
+  color: var(--text-color-3);
+}
+
+/* 仅后半段强调：与标题渐变同系，不做句首/句尾对称加粗 */
+.panel-lead-accent {
+  display: block;
+  margin-top: 10px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  border-left: 3px solid rgba(245, 158, 11, 0.85);
+  background: rgba(245, 158, 11, 0.07);
+  color: #b45309;
+  font-weight: 500;
+  line-height: 1.55;
+}
 
 .step-block {
-  padding: 14px 16px;
+  padding: 18px 20px;
   border-bottom: 1px solid var(--aitext-split-border);
   background: var(--app-surface);
   flex-shrink: 0;
+  transition: background 0.2s ease;
 }
+
+.step-block:hover {
+  background: rgba(245, 158, 11, 0.02);
+}
+
 .step-title {
   display: flex;
   align-items: center;
-  gap: 8px;
-  font-size: 13px;
-  font-weight: 600;
-  margin-bottom: 12px;
+  gap: 10px;
+  font-size: 14px;
+  font-weight: 700;
+  margin-bottom: 14px;
   color: var(--text-color-1);
+  letter-spacing: 0.01em;
 }
 
 .bp-card {
   cursor: pointer;
-  transition: border-color 0.2s, box-shadow 0.2s;
+  transition: all 0.2s ease;
+  border-radius: 10px;
+  overflow: hidden;
 }
+
+.bp-card:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.1);
+}
+
 .bp-card--active {
   border-color: var(--primary-color) !important;
-  box-shadow: 0 0 0 2px rgba(79,70,229,0.15);
+  box-shadow: 0 0 0 3px rgba(79, 70, 229, 0.2), 0 4px 16px rgba(79, 70, 229, 0.15);
+  background: linear-gradient(135deg, rgba(79, 70, 229, 0.05), rgba(99, 102, 241, 0.08));
+}
+
+.refactor-panel :deep(.n-alert) {
+  border-radius: 10px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.04);
+}
+
+.refactor-panel :deep(.n-card) {
+  border-radius: 10px;
+  transition: all 0.2s ease;
+}
+
+.refactor-panel :deep(.n-form-item) {
+  margin-bottom: 0;
+}
+
+.refactor-panel :deep(.n-input),
+.refactor-panel :deep(.n-input-number) {
+  border-radius: 8px;
+}
+
+.refactor-panel :deep(.n-button) {
+  border-radius: 8px;
+  font-weight: 500;
+}
+
+.refactor-panel :deep(.n-divider) {
+  margin: 12px 0;
+}
+
+.refactor-panel :deep(.n-code) {
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.03);
 }
 </style>
