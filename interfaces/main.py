@@ -32,7 +32,6 @@ logger = logging.getLogger(__name__)
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from starlette.requests import Request
 
 # Core module
 from interfaces.api.v1.core import novels, chapters, scene_generation_routes
@@ -105,29 +104,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-
-# 请求耗时与路由可见性（替代 uvicorn.access 单行 INFO，便于排查慢接口）
-_LOG_SKIP_PATHS = frozenset({"/", "/health", "/docs", "/redoc", "/openapi.json", "/favicon.ico"})
-
-
-@app.middleware("http")
-async def log_request_timing(request: Request, call_next):
-    if request.method == "OPTIONS":
-        return await call_next(request)
-    path = request.url.path
-    if path in _LOG_SKIP_PATHS:
-        return await call_next(request)
-    start = time.perf_counter()
-    response = await call_next(request)
-    ms = (time.perf_counter() - start) * 1000
-    logger.info(
-        "HTTP %s %s → %s  %.0fms",
-        request.method,
-        path,
-        response.status_code,
-        ms,
-    )
-    return response
+# HTTP 访问日志由 uvicorn.access 输出（与 uvicorn 默认格式一致：IP + 请求行 + 状态码）
 
 # Core module routes
 app.include_router(novels.router, prefix="/api/v1")

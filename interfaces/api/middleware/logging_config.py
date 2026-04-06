@@ -125,9 +125,9 @@ def setup_logging(
             print(f"WARNING: Failed to setup file logging: {e}")
             print("Logging will continue with console output only.")
 
-    # Set third-party library log levels to reduce noise
+    # Uvicorn：保留默认访问日志格式（INFO: 127.0.0.1:port - "GET ..." 200 OK）
     logging.getLogger("uvicorn").setLevel(logging.WARNING)
-    logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
+    logging.getLogger("uvicorn.access").setLevel(logging.INFO)
     logging.getLogger("fastapi").setLevel(logging.WARNING)
 
 
