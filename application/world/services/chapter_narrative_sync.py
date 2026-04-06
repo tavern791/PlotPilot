@@ -90,7 +90,7 @@ async def llm_chapter_extract_bundle(
     chapter_content: str,
     chapter_number: int,
 ) -> dict:
-    """一次 LLM 调用：叙事摘要 + 关键事件/埋线 + 人物关系三元组 + 伏笔线索（与后台抽取同源，避免两次调用）。"""
+    """一次 LLM 调用：叙事摘要 + 关键事件/埋线 + 人物关系三元组 + 伏笔线索 + 故事线进展 + 张力值 + 对话提取（避免多次调用）。"""
     body = chapter_content.strip()
     if len(body) > 24000:
         body = body[:24000] + "\n\n…（正文过长已截断）"
@@ -101,17 +101,23 @@ async def llm_chapter_extract_bundle(
   "key_events": "string",
   "open_threads": "string",
   "relation_triples": [ {"subject": "主体", "predicate": "关系", "object": "客体"} ],
-  "foreshadow_hints": [ {"description": "伏笔或悬念描述"} ]
+  "foreshadow_hints": [ {"description": "伏笔或悬念描述"} ],
+  "storyline_progress": [ {"type": "主线|支线|感情线", "description": "本章该线进展"} ],
+  "tension_score": 50,
+  "dialogues": [ {"speaker": "角色名", "content": "对话内容", "context": "对话场景"} ]
 }
 约束：
 - relation_triples：只写文中明确出现的关系，最多 8 条；无则 []。
 - foreshadow_hints：潜在伏笔/未解悬念，最多 4 条；无则 []。
+- storyline_progress：本章推进的故事线，最多 5 条；无则 []。
+- tension_score：章节张力值 0-100（冲突/悬念/情绪强度），平淡=20-40，正常=40-60，高潮=60-80，巅峰=80-100。
+- dialogues：重要对话（推动剧情/展现性格），最多 10 条；无则 []。
 - 不要编造 beat 列表；summary/key_events/open_threads 用中文；严格合法 JSON。"""
 
     user = f"第 {chapter_number} 章正文如下：\n\n{body}"
 
     prompt = Prompt(system=system, user=user)
-    config = GenerationConfig(max_tokens=3072, temperature=0.45)
+    config = GenerationConfig(max_tokens=4096, temperature=0.45)
 
     result = await llm.generate(prompt, config)
     raw = result.content if hasattr(result, "content") else str(result)
@@ -123,6 +129,19 @@ async def llm_chapter_extract_bundle(
     hints_raw = data.get("foreshadow_hints") or data.get("foreshadows") or []
     if not isinstance(hints_raw, list):
         hints_raw = []
+    storyline_raw = data.get("storyline_progress") or []
+    if not isinstance(storyline_raw, list):
+        storyline_raw = []
+    dialogues_raw = data.get("dialogues") or []
+    if not isinstance(dialogues_raw, list):
+        dialogues_raw = []
+
+    tension_score = data.get("tension_score", 50)
+    try:
+        tension_score = float(tension_score)
+        tension_score = max(0.0, min(100.0, tension_score))
+    except (ValueError, TypeError):
+        tension_score = 50.0
 
     return {
         "summary": str(data.get("summary", "")).strip(),
@@ -130,6 +149,9 @@ async def llm_chapter_extract_bundle(
         "open_threads": str(data.get("open_threads", "")).strip(),
         "relation_triples": triples_raw[:8],
         "foreshadow_hints": hints_raw[:4],
+        "storyline_progress": storyline_raw[:5],
+        "tension_score": tension_score,
+        "dialogues": dialogues_raw[:10],
     }
 
 
@@ -200,6 +222,66 @@ def persist_bundle_triples_and_foreshadows(
             foreshadowing_repo.save(registry)
         except Exception as e:
             logger.warning("伏笔落库失败 novel=%s ch=%s: %s", novel_id, chapter_number, e)
+def persist_bundle_extras(
+    novel_id: str,
+    chapter_number: int,
+    bundle: dict,
+    storyline_repository: Any = None,
+    chapter_repository: Any = None,
+) -> None:
+    """将 bundle 中的故事线进展、张力值、对话写入表。"""
+    # 1. 张力值写入 chapters 表
+    tension_score = bundle.get("tension_score")
+    if chapter_repository and tension_score is not None:
+        try:
+            from domain.novel.value_objects.novel_id import NovelId
+            chapters = chapter_repository.list_by_novel(NovelId(novel_id))
+            target_ch = next((ch for ch in chapters if ch.number == chapter_number), None)
+            if target_ch:
+                # 更新章节的 tension_score 属性
+                target_ch.tension_score = float(tension_score)
+                chapter_repository.save(target_ch)
+                logger.debug("张力值已落库 novel=%s ch=%s tension=%.1f", novel_id, chapter_number, tension_score)
+        except Exception as e:
+            logger.warning("张力值落库失败 novel=%s ch=%s: %s", novel_id, chapter_number, e)
+
+    # 2. 故事线进展更新
+    storyline_progress = bundle.get("storyline_progress") or []
+    if storyline_repository and storyline_progress:
+        try:
+            from domain.novel.value_objects.novel_id import NovelId
+            storylines = storyline_repository.get_by_novel_id(NovelId(novel_id))
+            for progress_item in storyline_progress:
+                if not isinstance(progress_item, dict):
+                    continue
+                line_type = str(progress_item.get("type", "")).strip()
+                description = str(progress_item.get("description", "")).strip()
+                if not description:
+                    continue
+
+                # 匹配故事线类型
+                matched = None
+                for sl in storylines:
+                    if line_type in sl.name or line_type in sl.storyline_type.value:
+                        matched = sl
+                        break
+
+                if matched:
+                    matched.update_progress(chapter_number, description)
+                    storyline_repository.save(matched)
+                    logger.debug("故事线进展已更新 novel=%s ch=%s type=%s", novel_id, chapter_number, line_type)
+        except Exception as e:
+            logger.warning("故事线进展落库失败 novel=%s ch=%s: %s", novel_id, chapter_number, e)
+
+    # 3. 对话提取（写入 narrative_events 或单独的 dialogues 表）
+    dialogues = bundle.get("dialogues") or []
+    if dialogues:
+        try:
+            # TODO: 根据实际表结构落库，这里先记录日志
+            logger.info("对话提取完成 novel=%s ch=%s count=%d", novel_id, chapter_number, len(dialogues))
+            # 可以写入 narrative_events 表，tag 为 "对白:角色名"
+        except Exception as e:
+            logger.warning("对话落库失败 novel=%s ch=%s: %s", novel_id, chapter_number, e)
 
 
 async def sync_chapter_narrative_after_save(
@@ -211,8 +293,10 @@ async def sync_chapter_narrative_after_save(
     llm_service: LLMService,
     triple_repository: Any = None,
     foreshadowing_repo: Any = None,
+    storyline_repository: Any = None,
+    chapter_repository: Any = None,
 ) -> None:
-    """异步：一次 LLM 写 summary/事件/埋线 + 可选三元组与伏笔 → 节拍来自规划 → upsert knowledge → 向量索引。"""
+    """异步：一次 LLM 写 summary/事件/埋线 + 可选三元组与伏笔 + 故事线/张力/对话 → 节拍来自规划 → upsert knowledge → 向量索引。"""
     if not content or not str(content).strip():
         logger.debug("跳过叙事同步：正文为空 novel=%s ch=%s", novel_id, chapter_number)
         return
@@ -274,6 +358,21 @@ async def sync_chapter_narrative_after_save(
             logger.warning(
                 "bundle 三元组/伏笔落库失败 novel=%s ch=%s: %s", novel_id, chapter_number, e
             )
+
+    if storyline_repository is not None or chapter_repository is not None:
+        try:
+            persist_bundle_extras(
+                novel_id,
+                chapter_number,
+                bundle,
+                storyline_repository,
+                chapter_repository,
+            )
+        except Exception as e:
+            logger.warning(
+                "bundle 故事线/张力/对话落库失败 novel=%s ch=%s: %s", novel_id, chapter_number, e
+            )
+
     logger.info(
         "分章叙事已落库 novel=%s ch=%s beats=%d(src=planning/knowledge) summary_len=%d",
         novel_id,
@@ -302,6 +401,8 @@ def sync_chapter_narrative_after_save_blocking(
     llm_service: LLMService,
     triple_repository: Any = None,
     foreshadowing_repo: Any = None,
+    storyline_repository: Any = None,
+    chapter_repository: Any = None,
 ) -> None:
     """供 FastAPI BackgroundTasks 同步入口调用。"""
     try:
@@ -315,6 +416,8 @@ def sync_chapter_narrative_after_save_blocking(
                 llm_service,
                 triple_repository=triple_repository,
                 foreshadowing_repo=foreshadowing_repo,
+                storyline_repository=storyline_repository,
+                chapter_repository=chapter_repository,
             )
         )
     except RuntimeError as e:
@@ -331,6 +434,8 @@ def sync_chapter_narrative_after_save_blocking(
                         llm_service,
                         triple_repository=triple_repository,
                         foreshadowing_repo=foreshadowing_repo,
+                        storyline_repository=storyline_repository,
+                        chapter_repository=chapter_repository,
                     )
                 )
             finally:
