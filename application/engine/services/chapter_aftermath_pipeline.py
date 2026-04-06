@@ -5,22 +5,18 @@
 - 文风既入队 VOICE_ANALYSIS 又同步 score_chapter 重复计算。
 
 顺序（重要产物均落库）：
-1. 分章叙事同步：StoryKnowledge 摘要/节拍 + 向量索引（chapter_narrative_sync）
+1. 分章叙事同步：一次 LLM 产出摘要/事件/埋线 + 三元组 + 伏笔 → StoryKnowledge + triples + ForeshadowingRegistry，再向量索引（chapter_narrative_sync）
 2. 文风评分：写入 chapter_style_scores（仅一次，不再入队 VOICE_ANALYSIS）
-3. 结构树知识图谱推断：KnowledgeGraphService.infer_from_chapter
-4. 后台：LLM 三元组 + 伏笔抽取（GRAPH_UPDATE / FORESHADOW_EXTRACT，不含 VOICE）
+3. 结构树知识图谱推断：KnowledgeGraphService.infer_from_chapter（与 LLM 三元组互补，非重复）
 """
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, Optional, TYPE_CHECKING
+from typing import Any, Dict, TYPE_CHECKING
 
 from domain.ai.services.llm_service import LLMService
-from domain.novel.value_objects.chapter_id import ChapterId
-from domain.novel.value_objects.novel_id import NovelId
 
 if TYPE_CHECKING:
-    from application.engine.services.background_task_service import BackgroundTaskService
     from application.world.services.knowledge_service import KnowledgeService
 
 logger = logging.getLogger(__name__)
@@ -64,26 +60,25 @@ class ChapterAftermathPipeline:
         chapter_indexing_service: Any,
         llm_service: LLMService,
         voice_drift_service: Any = None,
-        background_task_service: Optional["BackgroundTaskService"] = None,
+        triple_repository: Any = None,
+        foreshadowing_repository: Any = None,
     ) -> None:
         self._knowledge = knowledge_service
         self._indexing = chapter_indexing_service
         self._llm = llm_service
         self._voice = voice_drift_service
-        self._bg = background_task_service
+        self._triple_repository = triple_repository
+        self._foreshadowing_repository = foreshadowing_repository
 
     async def run_after_chapter_saved(
         self,
         novel_id: str,
         chapter_number: int,
         content: str,
-        *,
-        novel_id_vo: Optional[NovelId] = None,
-        chapter_id_vo: Optional[ChapterId] = None,
     ) -> Dict[str, Any]:
         """保存正文后执行完整管线。返回文风结果供托管/审计门控使用。
 
-        novel_id_vo / chapter_id_vo 若提供则入队 GRAPH + FORESHADOW；文风不再入队。
+        三元组与伏笔已在 narrative_sync 单次 LLM 中落库，不再单独入队后台抽取。
         """
         out: Dict[str, Any] = {
             "drift_alert": False,
@@ -108,6 +103,8 @@ class ChapterAftermathPipeline:
                 self._knowledge,
                 self._indexing,
                 self._llm,
+                triple_repository=self._triple_repository,
+                foreshadowing_repo=self._foreshadowing_repository,
             )
             out["narrative_sync_ok"] = True
         except Exception as e:
@@ -136,29 +133,5 @@ class ChapterAftermathPipeline:
 
         # 3) 结构树 KG 推断
         await infer_kg_from_chapter(novel_id, chapter_number)
-
-        # 4) 后台：三元组 + 伏笔（不复用 VOICE）
-        nid = novel_id_vo or NovelId(novel_id)
-        cid = chapter_id_vo
-        if self._bg and cid is not None:
-            from application.engine.services.background_task_service import TaskType
-
-            payload = {"content": content, "chapter_number": chapter_number}
-            for task_type in (TaskType.GRAPH_UPDATE, TaskType.FORESHADOW_EXTRACT):
-                try:
-                    self._bg.submit_task(
-                        task_type=task_type,
-                        novel_id=nid,
-                        chapter_id=cid,
-                        payload=payload,
-                    )
-                except Exception as e:
-                    logger.warning(
-                        "后台任务入队失败 %s novel=%s ch=%s: %s",
-                        task_type.value,
-                        novel_id,
-                        chapter_number,
-                        e,
-                    )
 
         return out
