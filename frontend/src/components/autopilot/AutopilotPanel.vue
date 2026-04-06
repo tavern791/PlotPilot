@@ -20,8 +20,10 @@
     <!-- 数据格 -->
     <div class="ap-grid">
       <div class="ap-cell">
-        <div class="label">已写章节</div>
-        <div class="value">{{ status?.completed_chapters || 0 }} / {{ status?.target_chapters || '-' }}</div>
+        <div class="label">完稿 / 书稿</div>
+        <div class="value">
+          {{ status?.completed_chapters || 0 }} / {{ status?.manuscript_chapters ?? status?.completed_chapters ?? 0 }} / {{ status?.target_chapters || '-' }}
+        </div>
       </div>
       <div class="ap-cell">
         <div class="label">总字数</div>
@@ -130,7 +132,16 @@ const needsRecovery = computed(
     status.value?.autopilot_status === 'error' ||
     (status.value?.consecutive_error_count || 0) >= 3
 )
-const progressPct = computed(() => status.value?.progress_pct || 0)
+/** 无完稿时用语稿章节进度条，避免规划落库后仍显示 0% */
+const progressPct = computed(() => {
+  const s = status.value
+  if (!s) return 0
+  const done = s.completed_chapters || 0
+  const ms = s.manuscript_chapters ?? 0
+  if (done > 0) return s.progress_pct ?? 0
+  if (ms > 0 && s.progress_pct_manuscript != null) return s.progress_pct_manuscript
+  return s.progress_pct ?? 0
+})
 const progressColor = computed(() => {
   if (needsRecovery.value) return '#d03050'
   if (needsReview.value) return '#f0a020'

@@ -17,13 +17,25 @@
 
     <n-empty
       v-else-if="!loading"
-      description="暂无叙事结构"
+      :description="structureEmptyDescription"
       class="structure-empty"
     >
       <template #extra>
-        <n-button type="primary" @click="emit('openPlanModal')">
-          🎯 启动结构规划
-        </n-button>
+        <n-space vertical :size="8" align="center">
+          <n-button v-if="autopilotEmptyMode" type="primary" @click="loadTree">
+            刷新结构树
+          </n-button>
+          <n-button
+            v-if="!autopilotEmptyMode"
+            type="primary"
+            @click="emit('openPlanModal')"
+          >
+            🎯 启动结构规划
+          </n-button>
+          <n-button v-else secondary size="small" @click="emit('openPlanModal')">
+            手动打开结构规划…
+          </n-button>
+        </n-space>
       </template>
     </n-empty>
 
@@ -69,7 +81,7 @@
 
 <script setup lang="ts">
 import { ref, computed, h, onMounted, watch } from 'vue'
-import { NTree, NEmpty, NSpin, NTag, NButton, NDropdown, NModal, NInput, useMessage } from 'naive-ui'
+import { NTree, NEmpty, NSpin, NTag, NButton, NSpace, NDropdown, NModal, NInput, useMessage, useDialog } from 'naive-ui'
 import { structureApi, type StoryNode } from '@/api/structure'
 import { chapterApi } from '@/api/chapter'
 
@@ -86,8 +98,20 @@ const emit = defineEmits<{
 }>()
 
 const message = useMessage()
+const dialog = useDialog()
 
 const loading = ref(false)
+/** 全托管时空侧栏提示：避免与「启动结构规划」主按钮混淆 */
+const autopilotEmptyMode = ref<null | 'planning' | 'review'>(null)
+const structureEmptyDescription = computed(() => {
+  if (autopilotEmptyMode.value === 'planning') {
+    return '全托管正在生成部-卷-幕结构，请稍候后点击「刷新结构树」'
+  }
+  if (autopilotEmptyMode.value === 'review') {
+    return '待审阅状态下若结构未显示，请点「刷新结构树」并确认守护进程已运行'
+  }
+  return '暂无叙事结构'
+})
 const treeData = ref<StoryNode[]>([])
 const selectedKeys = ref<string[]>([])
 const expandedKeys = ref<string[]>([])
@@ -199,6 +223,34 @@ const collectNonChapterKeys = (nodes: StoryNode[]): string[] => {
   return keys
 }
 
+async function syncAutopilotEmptyHint(hasTreeData: boolean) {
+  if (hasTreeData) {
+    autopilotEmptyMode.value = null
+    return
+  }
+  try {
+    const r = await fetch(`/api/v1/autopilot/${props.slug}/status`)
+    if (!r.ok) {
+      autopilotEmptyMode.value = null
+      return
+    }
+    const s = await r.json()
+    if (s.autopilot_status !== 'running') {
+      autopilotEmptyMode.value = null
+      return
+    }
+    if (s.current_stage === 'macro_planning') {
+      autopilotEmptyMode.value = 'planning'
+    } else if (s.needs_review || s.current_stage === 'paused_for_review') {
+      autopilotEmptyMode.value = 'review'
+    } else {
+      autopilotEmptyMode.value = null
+    }
+  } catch {
+    autopilotEmptyMode.value = null
+  }
+}
+
 const loadTree = async () => {
   loading.value = true
   try {
@@ -209,11 +261,13 @@ const loadTree = async () => {
     // 自动展开所有非章节节点
     expandedKeys.value = collectNonChapterKeys(treeData.value)
 
-    // 通知父组件树是否有数据
-    emit('treeLoaded', treeData.value.length > 0)
+    const hasData = treeData.value.length > 0
+    emit('treeLoaded', hasData)
+    await syncAutopilotEmptyHint(hasData)
   } catch (e: any) {
     message.error(e?.response?.data?.detail || '加载结构失败')
     emit('treeLoaded', false)
+    autopilotEmptyMode.value = null
   } finally {
     loading.value = false
   }
