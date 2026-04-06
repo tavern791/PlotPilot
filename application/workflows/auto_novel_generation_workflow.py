@@ -557,7 +557,7 @@ class AutoNovelGenerationWorkflow:
         length_rule = (
             f"7. 本段约 {beat_target_words} 字（本章分多节输出之一，勿写章节标题）"
             if beat_target_words
-            else ("7. 章节长度：2000-3000字" if not beat_mode else "7. 按下方节拍说明控制篇幅，勿写章节标题")
+            else ("7. 章节长度：3000-4000字" if not beat_mode else "7. 按下方节拍说明控制篇幅，勿写章节标题")
         )
         beat_extra = ""
         if beat_mode and beat_index is not None and total_beats is not None and total_beats > 0:

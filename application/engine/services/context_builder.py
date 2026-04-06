@@ -654,7 +654,7 @@ class ContextBuilder:
             layer2_truncated = self._truncate_text(layer2, remaining)
             return f"{layer1}\n\n=== SMART RETRIEVAL ===\n{layer2_truncated}"
 
-    def magnify_outline_to_beats(self, outline: str, target_chapter_words: int = 2500) -> List[Beat]:
+    def magnify_outline_to_beats(self, outline: str, target_chapter_words: int = 3500) -> List[Beat]:
         """节拍放大器：将章节大纲拆分为微观节拍
 
         核心策略：
