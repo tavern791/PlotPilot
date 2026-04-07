@@ -842,25 +842,30 @@ class ContinuousPlanningService:
         # 根据章节数决定规划深度
         if target_chapters > 500:
             planning_depth = "framework"  # 只规划部/卷框架
-            depth_instruction = """
+            depth_instruction = f"""
 【规划深度】目标章节数>500，采用渐进式规划：
 - 只输出「部」和「卷」的标题与主题（不输出具体幕）
-- 每部约 1000-2000 章，每卷约 100-300 章
+- 【强制要求】每卷必须输出 estimated_chapters（预估章数）
+- 【章数约束】所有卷的 estimated_chapters 之和必须等于 {target_chapters} 章
+- 每卷建议 50-200 章，根据剧情需要灵活分配
 - 幕节点将在写作过程中动态生成
-- 示例：10000章 = 5部 × 4卷/部，共20卷
 """
         elif target_chapters > 100:
             planning_depth = "partial"  # 规划前几部的幕
-            depth_instruction = """
+            depth_instruction = f"""
 【规划深度】目标章节数>100，采用部分详细规划：
 - 规划「部」和「卷」的完整结构
+- 【强制要求】每卷必须输出 estimated_chapters（预估章数）
+- 【章数约束】所有卷的 estimated_chapters 之和必须等于 {target_chapters} 章
 - 只为第1-2部的卷规划幕节点（约50-100幕）
 - 后续部的幕节点将在写作中动态生成
 """
         else:
             planning_depth = "full"  # 完整规划
-            depth_instruction = """
+            depth_instruction = f"""
 【规划深度】目标章节数<100，完整规划所有部/卷/幕
+- 【强制要求】每幕必须输出 estimated_chapters（预估章数）
+- 【章数约束】所有幕的 estimated_chapters 之和必须等于 {target_chapters} 章
 """
         
         system_msg = f"""# 角色设定
@@ -906,11 +911,14 @@ class ContinuousPlanningService:
 请直接输出JSON：
 {{"parts": [{{"title": "部标题", "theme": "部主题", "volumes": [...]}}]}}
 
-每卷格式：
-{{"title": "卷标题", "theme": "卷主题", "estimated_chapters": 预估章数}}
+每卷格式（estimated_chapters 为必填字段）：
+{{"title": "卷标题", "theme": "卷主题", "estimated_chapters": 预估章数（必填整数）}}
 
-{"如果规划深度为 full 或 partial，每卷还应包含 acts 数组：" if planning_depth != "framework" else "超长篇不输出 acts，留待后续动态生成。"}
-{{"acts": [{{"title": "幕标题", "description": "情节摘要"}}]}}
+{"如果规划深度为 full 或 partial，每卷还应包含 acts 数组，每幕也必须有 estimated_chapters：" if planning_depth != "framework" else "超长篇不输出 acts，但必须确保每卷的 estimated_chapters 之和等于目标章数。"}
+{"每幕格式：" if planning_depth == "full" else ""}
+{{"acts": [{{"title": "幕标题", "estimated_chapters": 预估章数（必填整数）, "description": "情节摘要"}}]}}
+
+【章数校验】请确保：所有卷/幕的 estimated_chapters 之和 = {target_chapters}
 
 不要添加任何解释性文字。"""
 
@@ -980,8 +988,8 @@ class ContinuousPlanningService:
 </STORY_CONTEXT>
 
 <TARGET_SCOPE>
-目标总篇幅：约 {target_chapters} 章
-请根据此篇幅智能设计部/卷/幕数量，不必拘泥于固定网格。
+目标总篇幅：精确 {target_chapters} 章
+【强制约束】所有卷/幕的 estimated_chapters 之和必须等于 {target_chapters}
 </TARGET_SCOPE>
 
 请立即生成叙事骨架，严格按以下JSON格式输出：
