@@ -791,10 +791,346 @@ class ContextBudgetAllocator:
         chapter_number: int,
         outline: str,
     ) -> str:
-        """获取知识图谱子网（一度关系）"""
-        # TODO: 实现知识图谱查询
-        # 当前返回空，等待知识图谱服务集成
-        return ""
+        """获取知识图谱子网（一度关系 + 触发词召回 + 向量语义检索）
+        
+        核心策略（参考设计文档）：
+        1. 一度关系（必带）：出场人物/地点的直接关系
+        2. 触发词条件召回（选带）：根据大纲关键词召回特定设定
+        3. 向量语义检索：基于大纲内容进行语义相似度检索
+        4. 章节范围筛选：优先返回当前章节前后相关的三元组
+        
+        Args:
+            novel_id: 小说 ID
+            chapter_number: 当前章节号
+            outline: 章节大纲（用于触发词检测和语义检索）
+        
+        Returns:
+            格式化的图谱子网文本
+        """
+        if not self.triple_repo:
+            return ""
+        
+        try:
+            # ========== Step 1: 从大纲中提取实体名称 ==========
+            mentioned_entities = self._extract_entities_from_outline(outline)
+            
+            # ========== Step 2: 一度关系召回 ==========
+            one_hop_triples = []
+            if mentioned_entities:
+                one_hop_triples = self.triple_repo.get_by_entity_ids_sync(
+                    novel_id, mentioned_entities
+                )
+            
+            # ========== Step 3: 触发词条件召回 ==========
+            trigger_triples = self._get_trigger_based_triples(novel_id, outline, mentioned_entities)
+            
+            # ========== Step 4: 向量语义检索 ==========
+            semantic_triples = self._get_semantic_triples(novel_id, outline)
+            
+            # ========== Step 5: 最近章节相关三元组（补充） ==========
+            recent_triples = self.triple_repo.get_recent_triples_sync(
+                novel_id, chapter_number, chapter_range=5, limit=20
+            )
+            
+            # ========== Step 6: 合并去重 ==========
+            all_triples = {}
+            for t in one_hop_triples + trigger_triples + semantic_triples + recent_triples:
+                if t.id not in all_triples:
+                    all_triples[t.id] = t
+            
+            # 按置信度和相关性排序
+            sorted_triples = sorted(
+                all_triples.values(),
+                key=lambda x: (
+                    -x.confidence,  # 置信度降序
+                    -len(x.related_chapters or []),  # 相关章节数降序
+                )
+            )[:30]  # 最多 30 条
+            
+            if not sorted_triples:
+                return ""
+            
+            # ========== Step 7: 格式化输出 ==========
+            return self._format_graph_subnetwork(sorted_triples, chapter_number)
+            
+        except Exception as e:
+            logger.warning(f"获取图谱子网失败: {e}")
+            return ""
+    
+    def _extract_entities_from_outline(self, outline: str) -> List[str]:
+        """从大纲中提取实体名称
+        
+        简单实现：提取书名号《》中的内容作为作品名，
+        引号「」『』中的内容可能为角色名或地点名。
+        
+        后续可以结合 Bible 的角色列表进行精确匹配。
+        """
+        entities = []
+        
+        # 提取书名号中的内容
+        import re
+        book_pattern = r'《([^》]+)》'
+        entities.extend(re.findall(book_pattern, outline))
+        
+        # 提取单引号中的内容
+        single_quote_pattern = r'「([^」]+)」'
+        entities.extend(re.findall(single_quote_pattern, outline))
+        
+        # 提取双引号中的内容
+        double_quote_pattern = r'『([^』]+)』'
+        entities.extend(re.findall(double_quote_pattern, outline))
+        
+        # 如果有 Bible 仓库，尝试从角色列表中匹配
+        if self.bible_repo:
+            try:
+                from domain.novel.value_objects.novel_id import NovelId
+                bible = self.bible_repo.get_by_novel_id(NovelId(self._current_novel_id))
+                if bible and hasattr(bible, 'characters'):
+                    for char in bible.characters:
+                        if char.name in outline:
+                            entities.append(char.name)
+                            # 也添加角色 ID
+                            if hasattr(char, 'character_id'):
+                                entities.append(char.character_id.value)
+            except Exception:
+                pass
+        
+        return list(set(entities))
+    
+    # 临时存储当前 novel_id（用于 _extract_entities_from_outline）
+    _current_novel_id: str = ""
+    
+    def _get_trigger_based_triples(
+        self,
+        novel_id: str,
+        outline: str,
+        mentioned_entities: List[str],
+    ) -> List:
+        """基于触发词召回三元组
+        
+        触发词映射表（参考设计文档）：
+        - "战斗" → 武器属性、战斗技能
+        - "魔法" → 力量体系规则
+        - "潜入" → 地形死角、安保规则
+        - "交易" → 经济模式、货币设定
+        """
+        if not self.triple_repo:
+            return []
+        
+        # 触发词到谓词的映射
+        TRIGGER_PREDICATE_MAP = {
+            "战斗": ["使用", "装备", "拥有", "擅长", "技能", "武器"],
+            "打斗": ["使用", "装备", "拥有", "擅长", "技能", "武器"],
+            "对决": ["使用", "装备", "拥有", "擅长", "技能", "武器"],
+            "魔法": ["修炼", "掌握", "领悟", "功法", "法术", "属性"],
+            "修炼": ["修炼", "掌握", "领悟", "功法", "法术", "境界"],
+            "潜入": ["位于", "通往", "隐藏", "暗道", "出口"],
+            "交易": ["拥有", "购买", "出售", "价值", "货币"],
+            "争吵": ["关系", "敌对", "矛盾"],
+            "冲突": ["关系", "敌对", "矛盾"],
+        }
+        
+        triggered_predicates = []
+        for trigger, predicates in TRIGGER_PREDICATE_MAP.items():
+            if trigger in outline:
+                triggered_predicates.extend(predicates)
+        
+        if not triggered_predicates:
+            return []
+        
+        # 去重
+        triggered_predicates = list(set(triggered_predicates))
+        
+        # 查询相关三元组
+        return self.triple_repo.search_by_predicate_sync(
+            novel_id,
+            triggered_predicates,
+            subject_ids=mentioned_entities if mentioned_entities else None,
+            limit=20,
+        )
+    
+    def _get_semantic_triples(
+        self,
+        novel_id: str,
+        outline: str,
+    ) -> List:
+        """基于向量语义检索召回三元组
+        
+        使用向量相似度搜索找到与大纲语义相关的三元组。
+        需要预先通过 TripleIndexingService 索引三元组。
+        
+        Args:
+            novel_id: 小说 ID
+            outline: 章节大纲
+        
+        Returns:
+            相关的三元组列表
+        """
+        # 检查是否有向量检索门面
+        if not self.vector_facade:
+            return []
+        
+        try:
+            from application.analyst.services.triple_indexing_service import TripleIndexingService
+            
+            # 创建三元组索引服务
+            triple_indexing = TripleIndexingService(
+                vector_store=self.vector_facade.vector_store,
+                embedding_service=self.vector_facade.embedding_service,
+            )
+            
+            # 执行语义检索
+            results = triple_indexing.sync_search(
+                novel_id=novel_id,
+                query=outline,
+                limit=10,
+                min_score=0.5,
+            )
+            
+            if not results:
+                return []
+            
+            # 从结果中提取 triple_id，然后从数据库获取完整的三元组
+            triple_ids = []
+            for hit in results:
+                payload = hit.get("payload", {})
+                triple_id = payload.get("triple_id")
+                if triple_id:
+                    triple_ids.append(triple_id)
+            
+            # 从数据库获取三元组
+            if not triple_ids:
+                return []
+            
+            # 获取所有相关三元组
+            all_triples = self.triple_repo.get_by_novel_sync(novel_id)
+            id_to_triple = {t.id: t for t in all_triples}
+            
+            # 按检索顺序返回
+            semantic_triples = []
+            for tid in triple_ids:
+                if tid in id_to_triple:
+                    semantic_triples.append(id_to_triple[tid])
+            
+            logger.info(f"[SemanticSearch] 找到 {len(semantic_triples)} 个语义相关三元组")
+            return semantic_triples
+            
+        except Exception as e:
+            logger.debug(f"向量语义检索失败（可能未索引）: {e}")
+            return []
+    
+    def _format_graph_subnetwork(self, triples: List, current_chapter: int) -> str:
+        """格式化图谱子网为可读文本
+        
+        输出格式：
+        【图谱子网】
+        
+        [人物关系]
+        - 李明 —认识→ 王总 (第5章)
+        - 李明 —师徒→ 柳月 (第2章)
+        
+        [人物状态]
+        - 李明: 心理(愤怒边缘) | 当前状态(受伤)
+        
+        [地点信息]
+        - 废弃工厂 —位于→ 城东郊区 | 地形(复杂)
+        
+        [道具/技能]
+        - 李明 —装备→ 破军剑 | 属性(攻击+50)
+        """
+        lines = ["【图谱子网】"]
+        
+        # 按类型分组
+        character_relations = []  # 人物关系
+        character_states = []     # 人物状态
+        location_info = []        # 地点信息
+        item_skills = []          # 道具/技能
+        other_info = []           # 其他
+        
+        for t in triples:
+            subj = t.subject_id or ""
+            pred = t.predicate or ""
+            obj = t.object_id or ""
+            
+            # 格式化章节信息
+            chapter_info = ""
+            if t.first_appearance:
+                chapter_info = f"首次出现:第{t.first_appearance}章"
+            if t.related_chapters:
+                chapters_str = ",".join(str(c) for c in t.related_chapters[:3])
+                if chapter_info:
+                    chapter_info += f" | 相关:第{chapters_str}章"
+                else:
+                    chapter_info = f"相关:第{chapters_str}章"
+            
+            # 描述信息
+            desc = t.description or ""
+            
+            # 分类处理
+            if t.subject_type == "character" and t.object_type == "character":
+                # 人物-人物关系
+                relation_str = f"- {subj} —{pred}→ {obj}"
+                if chapter_info:
+                    relation_str += f" ({chapter_info})"
+                character_relations.append(relation_str)
+                
+            elif t.subject_type == "character" and t.object_type == "location":
+                # 人物-地点关系
+                loc_str = f"- {subj} —{pred}→ {obj}"
+                if desc:
+                    loc_str += f" | {desc[:50]}"
+                location_info.append(loc_str)
+                
+            elif t.subject_type == "character" and t.object_type == "item":
+                # 人物-道具关系
+                item_str = f"- {subj} —{pred}→ {obj}"
+                if desc:
+                    item_str += f" | {desc[:50]}"
+                item_skills.append(item_str)
+                
+            elif t.subject_type == "location":
+                # 地点相关
+                loc_str = f"- {subj} —{pred}→ {obj}"
+                if desc:
+                    loc_str += f" | {desc[:50]}"
+                location_info.append(loc_str)
+                
+            elif pred in ["状态", "心理", "当前状态"]:
+                # 人物状态
+                state_str = f"- {subj}: {pred}({obj})"
+                if desc:
+                    state_str += f" | {desc[:30]}"
+                character_states.append(state_str)
+                
+            else:
+                # 其他关系
+                other_str = f"- {subj} —{pred}→ {obj}"
+                if chapter_info:
+                    other_str += f" ({chapter_info})"
+                other_info.append(other_str)
+        
+        # 组装输出
+        if character_relations:
+            lines.append("\n[人物关系]")
+            lines.extend(character_relations[:10])
+        
+        if character_states:
+            lines.append("\n[人物状态]")
+            lines.extend(character_states[:5])
+        
+        if location_info:
+            lines.append("\n[地点信息]")
+            lines.extend(location_info[:5])
+        
+        if item_skills:
+            lines.append("\n[道具/技能]")
+            lines.extend(item_skills[:5])
+        
+        if other_info:
+            lines.append("\n[其他设定]")
+            lines.extend(other_info[:5])
+        
+        return "\n".join(lines)
     
     def _get_recent_act_summaries(
         self,
