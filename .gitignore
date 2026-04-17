@@ -117,3 +117,4 @@ llm_profiles.json
 # ── 锁文件（运行时生成） ──
 aitext.lock
 scripts/aitext.lock
+.gitnexus
